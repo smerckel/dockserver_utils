@@ -196,7 +196,7 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
     def __init__(self, top_directory: str, devices: list = [str], host: str = "localhost", port: int = 8181):
         super().__init__(top_directory)
         self.devices: list[str] = devices
-        self.host: string = host
+        self.host: str = host
         self.port: int = port 
         self.active_connections: list[str] = []
         
@@ -238,17 +238,21 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         """
         logger.debug(f"device:{device} change:{change}")
         if change == 1 and device not in self.active_connections:
-            self.active_connections.append(device)
-            # Use a asynchronous serial connection
-            serial2tcp = Serial2TCP(device, self.host, self.port)
-            result = await serial2tcp.run()
-            logger.debug("Serial instance cleaned up.")
-            logger.debug(f"Result : {result}.")
-            self.active_connections.remove(device)
+            result = await self.handle_connection(device, change)
             return result
         return 0 # all well
     
-    
+
+    async def handle_connection(self, device: str, change: int) -> int | bool:
+        self.active_connections.append(device)
+        # Use a asynchronous serial connection
+        serial2tcp = Serial2TCP(device, self.host, self.port)
+        result = await serial2tcp.run()
+        logger.debug("Serial instance cleaned up.")
+        logger.debug(f"Result : {result}.")
+        self.active_connections.remove(device)
+        return result
+        
 logger = logging.getLogger(__name__)
 
 

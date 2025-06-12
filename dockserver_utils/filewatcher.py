@@ -54,10 +54,11 @@ class AsynchronousDirectoryMonitorBase(ABC):
                 break
         logger.info(f"Stopped monitoring filesystem under {self.top_directory}.")
             
-    async def run(self) -> None:
+    async def run(self, pre_existing_tasks: list[asyncio.Task] = []) -> None:
         ''' Asynchronous entry method
         '''
-        await self.watch_directory()
+        tasks = [self.watch_directory()] + pre_existing_tasks
+        await asyncio.gather(*tasks)
 
 
     
