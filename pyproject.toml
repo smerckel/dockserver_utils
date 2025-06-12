@@ -1,0 +1,56 @@
+[project]
+name = "dockserver_utils"
+dynamic = ["version"]
+description = "Utilities and workarounds for older dockserver installs"
+authors = [
+  { name = "Lucas Merckelbach", email = "lucas.merckelbach@hereon.de" },
+]
+license = { text = "GPLv03" }
+dependencies = ["asyncio",
+                "pyserial",  
+	     	"pyserial-asyncio",
+		"watchfiles"]
+requires-python = ">=3.10"
+readme = "README.md"
+classifiers = [
+  'Development Status :: 4 - Beta',
+  'Topic :: Scientific/Engineering',
+  'Intended Audience :: Science/Research',
+  'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
+  'Operating System :: OS Independent',
+  'Programming Language :: Python :: 3 :: Only',
+]
+
+[project.scripts]
+serialTCPconnector = "dockserver_utils.scripts:serialTCPConnector"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+
+# Make sure that VERSION files are included in the build.
+[tool.setuptools.package-data]
+"*" = ["VERSION"]
+
+# [tool.pytest.ini_options]
+# filterwarnings = "always::UserWarning"
+
+# [tool.black]
+# line-length = 88
+# include = '\.pyi?$'
+# exclude = '''
+
+# (
+#   /(
+#     | \.ipynb_checkpoints
+#     | \.pytest_cache
+#     | __pycache__
+#   )/
+# )
+
+# '''
