@@ -29,8 +29,8 @@ class AsynchronousDirectoryMonitorBase(ABC):
     """
     
     def __init__(self, top_directory: str):
-        self.top_directory = top_directory
-
+        self.top_directory:str = top_directory
+        
     @abstractmethod
     def is_to_be_processed(self, path: str, change: int) -> bool:
         pass
@@ -46,6 +46,7 @@ class AsynchronousDirectoryMonitorBase(ABC):
             for change, path in changes:
                 if self.is_to_be_processed(path, change):
                     received_error = await self.process_file(path, change)
+                    logger.debug(f"process_file({path},{change}) returned {received_error}.")
                     if received_error:
                         s = f"Processing file {path} for change {change} returned an error ({received_error})."
                         logger.info(s)
@@ -54,11 +55,10 @@ class AsynchronousDirectoryMonitorBase(ABC):
                 break
         logger.info(f"Stopped monitoring filesystem under {self.top_directory}.")
             
-    async def run(self, pre_existing_tasks: list[asyncio.Task] = []) -> None:
+    async def run(self) -> None:
         ''' Asynchronous entry method
         '''
-        tasks = [self.watch_directory()] + pre_existing_tasks
-        await asyncio.gather(*tasks)
+        await self.watch_directory()
 
 
     

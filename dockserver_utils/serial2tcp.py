@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 import asyncio
 import argparse
 import logging
+import os
+import sys
 import typing
 
 import serial_asyncio
@@ -12,6 +14,9 @@ from . import filewatcher
 COMMS_NOERROR = 0
 COMMS_ERROR_SERIAL = 1
 COMMS_ERROR_TCP = 2
+
+ERROR_CODE_NO_ERROR = 0
+ERROR_CODE_TCP_CONNECTION_LOST = 1
 
 # Buffer size of StreamReaders.
 READBUFFER = 256
@@ -143,7 +148,7 @@ class Serial2TCP(object):
         An attempt is made to cancel the remaining active task and close any writers.
         
         """
-        logger.info(f"Starting connection {self.device} <-> {self.host}:{self.port}.")
+        logger.debug(f"Starting connection {self.device} <-> {self.host}:{self.port}.")
         tasks, transports = await self.initialise_connection()
         logger.info(f"Started connection {self.device} <-> {self.host}:{self.port}.")
         # Wait for one of the tasks to complete (return by catching execption).
@@ -199,6 +204,7 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         self.host: str = host
         self.port: int = port 
         self.active_connections: list[str] = []
+        self.tasks: list[asyncio.Task] = []
         
     def is_to_be_processed(self, path: str, change: int) -> bool:
         """Checker to determine if a path should be processed
@@ -238,12 +244,24 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         """
         logger.debug(f"device:{device} change:{change}")
         if change == 1 and device not in self.active_connections:
-            result = await self.handle_connection(device, change)
+            result = await self.handle_connection(device)
             return result
         return 0 # all well
     
 
-    async def handle_connection(self, device: str, change: int) -> int | bool:
+    async def handle_connection(self, device: str) -> int | bool:
+        """ Handles a single serial <-> tcp connection
+
+        Parameters
+        ----------
+        device: str
+            device name (path)
+
+        Returns
+        -------
+        int | bool:
+            Error code. {0 ,COMMS_NOERROR, False}, COMMS_ERROR_SERIAL, or COMMS_ERROR_TCP.
+        """
         self.active_connections.append(device)
         # Use a asynchronous serial connection
         serial2tcp = Serial2TCP(device, self.host, self.port)
@@ -252,7 +270,37 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         logger.debug(f"Result : {result}.")
         self.active_connections.remove(device)
         return result
-        
+
+    async def start(self) -> None:
+        """ Custom entry point, which checks for already existing serial ports
+            and handles these if configured so.
+        """
+        for device in self.devices:
+            if os.path.exists(device):
+                _t = asyncio.create_task(self.handle_connection(device))
+                self.tasks.append(_t)
+        self.tasks.append(asyncio.create_task(self.run(),name="main"))
+        tasks = self.tasks
+        while tasks:
+            done, pending = await asyncio.wait(tasks,
+                                               return_when=asyncio.FIRST_COMPLETED)
+            tasks = [_t for _t in pending]
+
+            # if the done task is "main" then just end the
+            # program. Server quitted. This will also happen if the
+            # task is not main, and the comms error is
+            # COMMS_ERROR_TCP. In all other cases discard the done
+            # task and continue awaiting the pending ones. Last one
+            # standing is always main.
+
+            for _t in done:
+                if _t.get_name() == "main" or (_t.get_name() != "main" and _t.result() == COMMS_ERROR_TCP):
+                    # server must have disappeared when an established
+                    # connection already existed.
+                    with open("/dev/stderr", "w") as fp:
+                        fp.write("Fatal error: Exiting due to lost connection to server.\n")
+                    sys.exit(ERROR_CODE_TCP_CONNECTION_LOST)
+                
 logger = logging.getLogger(__name__)
 
 

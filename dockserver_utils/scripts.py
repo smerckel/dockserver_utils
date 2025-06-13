@@ -11,4 +11,4 @@ def serialTCPConnector():
     logger.setLevel(log_level)
     logger.info("Waiting for connections...")
     serial_device_forwarder = serial2tcp.SerialDeviceForwarder('/dev/', ['/dev/ttyUSB0', '/dev/ttyUSB1'])
-    asyncio.run(serial_device_forwarder.run())
+    asyncio.run(serial_device_forwarder.start())
