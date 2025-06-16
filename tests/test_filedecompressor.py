@@ -102,7 +102,7 @@ async def test_managing_mcg(setup_tmpdir):
     assert available_files == ['k_999-2023-107-0-1.dbd', '01600001.dcd']
 
 @pytest.mark.asyncio
-async def test_managing_mcg(setup_tmpdir):
+async def test_managing_ccc(setup_tmpdir):
     dst = os.path.join(setup_tmpdir, 'from-glider')
     os.mkdir(dst)
     src = os.path.join(DATA_DIR,"daad1b20.ccc")

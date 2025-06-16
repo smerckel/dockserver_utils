@@ -132,6 +132,11 @@ class AsynchronousFileDecompressor(filewatcher.AsynchronousDirectoryMonitorBase)
     async def process_file(self, path: str, change: int) -> int:
         file_properties = self.get_file_properties(path)
         decompressed_filename = self.file_decompressor.decompress(path)
+        with open(decompressed_filename) as fp:
+            print("-"*10)
+            for line in fp:
+                print(line)
+            print("-"*10)
         if decompressed_filename and file_properties.extension not in [".ccc", ".CCC"]:
             # decompression was successful, and of dbd or mlg type. Now rename the file.
             renamed_file = self.file_renamer.rename(decompressed_filename)
