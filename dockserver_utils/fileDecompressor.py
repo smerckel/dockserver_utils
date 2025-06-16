@@ -7,13 +7,11 @@ import re
 import shutil
 
 from watchfiles import awatch, Change
+import aionotify
 
 import dbdreader.decompress
 
-try:
-    from . import filewatcher
-except Exception:
-    import filewatcher
+from . import filewatcher
 
 
 
@@ -83,7 +81,7 @@ class DBDMLGFileRenamer(GliderFileRenamer):
         return new_filename
     
 
-class AsynchronousFileDecompressor(filewatcher.AsynchronousDirectoryMonitorBase):
+class AsynchronousFileDecompressorBase(filewatcher.AsynchronousDirectoryMonitorBase):
 
     EXTENSIONS: list[str] = ".dcd .ecd .mcd .ncb .scd .tcd .mcg .ncg .ccc .DCD .ECD .MCD .NCB .SCD .TCD .MCG .NCG .CCC".split()
     REGEXES: dict[str,re.Pattern] = dict(datafile=re.compile(r"^\d{8}\.(dcd|ecd|mcd|ncd|scd|tcd|DCD|ECD|MCD|NCD|SCD|TCD)$"),
@@ -104,18 +102,20 @@ class AsynchronousFileDecompressor(filewatcher.AsynchronousDirectoryMonitorBase)
             return FileProperties(path, full_base_filename, base_filename, extension, directory)
         else:
             return None
+        
+    def is_copied(self, path: str, change: int) -> bool:
+        raise NotImplementedError
 
-    def is_to_be_processed(self, path: str, change: int) -> bool:
-        if change != Change.added:
-            return False
+    
+    def is_to_be_processed(self, path: str) -> bool:
         file_properties = self.get_file_properties(path)
         if file_properties is None:
-            logger.debug(f"is_to_be_processed(): no fileproperties")
+            logger.debug(f"is_to_be_processed(): no fileproperties ({path})")
             return False
-        if file_properties.extension in AsynchronousFileDecompressor.EXTENSIONS and \
+        if file_properties.extension in AsynchronousFileDecompressorBase.EXTENSIONS and \
            file_properties.directory == "from-glider":
             regex_match = False
-            for k, v in AsynchronousFileDecompressor.REGEXES.items():
+            for k, v in AsynchronousFileDecompressorBase.REGEXES.items():
                 regex_match |= bool(v.search(file_properties.full_base_filename))
             if regex_match:
                 logger.debug(f"is_to_be_processed(): {path} is a match!")
@@ -129,14 +129,9 @@ class AsynchronousFileDecompressor(filewatcher.AsynchronousDirectoryMonitorBase)
             return False
             
 
-    async def process_file(self, path: str, change: int) -> int:
+    async def process_file(self, path: str) -> int:
         file_properties = self.get_file_properties(path)
         decompressed_filename = self.file_decompressor.decompress(path)
-        with open(decompressed_filename) as fp:
-            print("-"*10)
-            for line in fp:
-                print(line)
-            print("-"*10)
         if decompressed_filename and file_properties.extension not in [".ccc", ".CCC"]:
             # decompression was successful, and of dbd or mlg type. Now rename the file.
             renamed_file = self.file_renamer.rename(decompressed_filename)
@@ -146,20 +141,90 @@ class AsynchronousFileDecompressor(filewatcher.AsynchronousDirectoryMonitorBase)
             # successfully decompressed a cache file.
             file_properties_decompressed = self.get_file_properties(decompressed_filename)
             logger.info(f"Decompressed and renamed {file_properties.full_base_filename} to {file_properties_decompressed.full_base_filename}")
+
+
             
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.WARNING)
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.DEBUG)
+class AsynchronousFileDecompressorWatchfiles(AsynchronousFileDecompressorBase):
+                                      
+    def __init__(self, top_directory: str, file_renamer: GliderFileRenamer=DBDMLGFileRenamer()):
+        super().__init__(top_directory, file_renamer)
+        
+    def is_copied(self, path: str, change: int) -> bool:
+        return change == Change.added # Note this does not work for slow copying.
 
-    async def main():
-        file_renamer = DBDMLGFileRenamer() 
-        fdc = AsynchronousFileDecompressor(top_directory="/var/local/dockserver/gliders",
-                                           file_renamer = file_renamer)
-        await fdc.run()
+    ### This method does not do what we want, because watchfiles
+    ### cannot detect when a file is being closed. For now rely on aionotify instead.
+    async def watch_directory(self) -> None:
+        logger.info(f"Started monitoring filesystem under {self.top_directory}.")
+        received_error = 0
+        async for changes in awatch(self.top_directory):
+            for change, path in changes:
+                if self.is_copied(path, change) and self.is_to_be_processed(path):
+                    received_error = await self.process_file(path)
+                    logger.debug(f"process_file({path},{change}) returned {received_error}.")
+                    if received_error:
+                        s = f"Processing file {path} for change {change} returned an error ({received_error})."
+                        logger.info(s)
+                        break
+            if received_error:
+                break
+        logger.info(f"Stopped monitoring filesystem under {self.top_directory}.")
 
-    asyncio.run(main())
-else:
 
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.DEBUG)
+        
+class AsynchronousFileDecompressorAionotify(AsynchronousFileDecompressorBase):
+                                      
+    def __init__(self, top_directory: str, file_renamer: GliderFileRenamer=DBDMLGFileRenamer()):
+        super().__init__(top_directory, file_renamer)
+        self.watcher: None|aionotify.Watcher=None
+        self.handled_files: list[str] = []
+        self.alias_mapping: dict[str, str] = {}
+        
+    def is_copied(self, path: str, change: int) -> bool:
+        return change == Change.added # Note this does not work for slow copying.
+
+
+    def is_copied(self, path:str, change: int) -> bool:
+        copied = False
+        if path not in self.handled_files and change == aionotify.Flags.CREATE:
+            self.handled_files.append(path)
+        elif path in self.handled_files and change == aionotify.Flags.CLOSE_WRITE:
+            self.handled_files.remove(path)
+            copied = True
+        logger.debug(f"path: {path}, change: {change} copied?: {copied}")
+        return copied
+
+    async def setup_watcher(self):
+        self.watcher = aionotify.Watcher()
+        for root, dirs, files in os.walk(self.top_directory):
+            if 'from-glider' in dirs:
+                alias = os.path.basename(root)
+                path = os.path.join(root, 'from-glider')
+                if alias!='unknown':
+                    self.watcher.watch(alias=alias, path=path,
+                                       flags=aionotify.Flags.CREATE|aionotify.Flags.CLOSE_WRITE)
+                    self.alias_mapping[alias] = path
+                    logger.debug(f"Added watcher for {alias}.")
+        # todo think of something to handle when new gliders are added.
+        await self.watcher.setup()
+
+        
+    async def watch_directory(self) -> None:
+        await self.setup_watcher()
+        while True:
+            event = await self.watcher.get_event()
+            path = os.path.join(self.alias_mapping[event.alias], event.name)
+            if self.is_copied(path, event.flags) and self.is_to_be_processed(path):
+                logger.debug(f"{path} is to be processed.")
+                received_error = await self.process_file(path)
+                logger.debug(f"process_file({path}) returned {received_error}.")
+                if received_error:
+                    s = f"Processing file {path} for change {change} returned an error ({received_error})."
+                    logger.info(s)
+                    break
+        logger.info(f"Stopped monitoring filesystem under {self.top_directory}.")
+    
+            
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)

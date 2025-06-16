@@ -30,31 +30,23 @@ class AsynchronousDirectoryMonitorBase(ABC):
     
     def __init__(self, top_directory: str):
         self.top_directory:str = top_directory
+
+    @abstractmethod
+    def is_copied(self, path: str, change: int) -> bool:
+        pass
         
     @abstractmethod
-    def is_to_be_processed(self, path: str, change: int) -> bool:
+    def is_to_be_processed(self, path: str) -> bool:
         pass
 
     @abstractmethod
-    async def process_file(self, path: str, change: int) -> int:
+    async def process_file(self, path: str) -> int:
         pass
 
+    @abstractmethod
     async def watch_directory(self) -> None:
-        logger.info(f"Started monitoring filesystem under {self.top_directory}.")
-        received_error = 0
-        async for changes in awatch(self.top_directory):
-            for change, path in changes:
-                if self.is_to_be_processed(path, change):
-                    received_error = await self.process_file(path, change)
-                    logger.debug(f"process_file({path},{change}) returned {received_error}.")
-                    if received_error:
-                        s = f"Processing file {path} for change {change} returned an error ({received_error})."
-                        logger.info(s)
-                        break
-            if received_error:
-                break
-        logger.info(f"Stopped monitoring filesystem under {self.top_directory}.")
-            
+        pass
+    
     async def run(self) -> None:
         ''' Asynchronous entry method
         '''
