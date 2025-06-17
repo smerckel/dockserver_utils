@@ -31,9 +31,6 @@ class AsynchronousDirectoryMonitorBase(ABC):
     def __init__(self, top_directory: str):
         self.top_directory:str = top_directory
 
-    @abstractmethod
-    def is_copied(self, path: str, change: int) -> bool:
-        pass
         
     @abstractmethod
     def is_to_be_processed(self, path: str) -> bool:

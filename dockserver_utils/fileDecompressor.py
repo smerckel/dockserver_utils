@@ -180,10 +180,6 @@ class AsynchronousFileDecompressorAionotify(AsynchronousFileDecompressorBase):
         self.handled_files: list[str] = []
         self.alias_mapping: dict[str, str] = {}
         
-    def is_copied(self, path: str, change: int) -> bool:
-        return change == Change.added # Note this does not work for slow copying.
-
-
     def is_copied(self, path:str, change: int) -> bool:
         copied = False
         if path not in self.handled_files and change == aionotify.Flags.CREATE:
