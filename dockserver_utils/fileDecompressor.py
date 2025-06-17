@@ -182,9 +182,9 @@ class AsynchronousFileDecompressorAionotify(AsynchronousFileDecompressorBase):
         
     def is_copied(self, path:str, change: int) -> bool:
         copied = False
-        if path not in self.handled_files and change | aionotify.Flags.CREATE:
+        if path not in self.handled_files and change == aionotify.Flags.CREATE:
             self.handled_files.append(path)
-        elif path in self.handled_files and change | aionotify.Flags.CLOSE_WRITE:
+        elif path in self.handled_files and change == aionotify.Flags.CLOSE_WRITE:
             self.handled_files.remove(path)
             copied = True
         logger.debug(f"path: {path}, change: {change} copied?: {copied}")

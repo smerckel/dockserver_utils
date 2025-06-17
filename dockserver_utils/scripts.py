@@ -97,7 +97,13 @@ def serialTCPConnector():
                 fp.write(f"Error opening configuration file {args.configuration_file}.")
             sys.exit(1)
 
-    
+    logger.info(f"Configuration:")
+    logger.info("-"*20)
+    logger.info(f"Serial devices:")
+    for i, s in enumerate(args.devices.split(",")):
+        logger.info(f"\t{i:2d} {s}")
+    logger.info(f"Server {args.server}:{args.port}")
+
     logger.info("Waiting for connections...")
     serial_device_forwarder = serial2tcp.SerialDeviceForwarder(top_directory='/dev/',
                                                                devices = args.devices.split(","),
@@ -128,6 +134,6 @@ handle compressded glider files automatically."""
     file_renamer = fileDecompressor.DBDMLGFileRenamer()
     logger.info(f"Started monitoring for any compressed binary glider data files to arrive.")
     logger.info(f"The top directory is set to {args.directory}.")
-    fdc = fileDecompressor.AsynchronousFileDecompressor(top_directory=args.directory,
-                                                        file_renamer = file_renamer)
+    fdc = fileDecompressor.AsynchronousFileDecompressorAionotify(top_directory=args.directory,
+                                                                 file_renamer = file_renamer)
     asyncio.run(fdc.run())

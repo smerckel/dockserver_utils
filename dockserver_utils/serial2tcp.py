@@ -7,16 +7,18 @@ import sys
 import typing
 
 import serial_asyncio
-from watchfiles import awatch, Change
+serial_asyncio.serial.serialutil.SerialException
+
+import aionotify
 
 from . import filewatcher
 
 COMMS_NOERROR = 0
 COMMS_ERROR_SERIAL = 1
 COMMS_ERROR_TCP = 2
+COMMS_ERROR_SERIAL_INITIALISATION = 3
+COMMS_ERROR_TCP_INITIALISATION = 4
 
-ERROR_CODE_NO_ERROR = 0
-ERROR_CODE_TCP_CONNECTION_LOST = 1
 
 # Buffer size of StreamReaders.
 READBUFFER = 256
@@ -111,6 +113,7 @@ class Serial2TCP(object):
         Asyncio coroutine.
 
         """
+        #await asyncio.sleep(1)
         ser_reader, ser_writer = \
             await serial_asyncio.open_serial_connection(url=self.device,
                                                         baudrate=115200,
@@ -149,7 +152,15 @@ class Serial2TCP(object):
         
         """
         logger.debug(f"Starting connection {self.device} <-> {self.host}:{self.port}.")
-        tasks, transports = await self.initialise_connection()
+        try:
+            tasks, transports = await self.initialise_connection()
+        except serial_asyncio.serial.serialutil.SerialException as e:
+            logger.error(f"Error occured: {e.args[-1]}")
+            return COMMS_ERROR_SERIAL_INITIALISATION
+        except Exception as e:
+            logger.error(f"Error occured: {type(e)}")
+            return COMMS_ERROR_TCP_INITIALISATION
+        
         logger.info(f"Started connection {self.device} <-> {self.host}:{self.port}.")
         # Wait for one of the tasks to complete (return by catching execption).
         done, pending = await asyncio.wait(tasks.values(),
@@ -202,11 +213,12 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         super().__init__(top_directory)
         self.devices: list[str] = devices
         self.host: str = host
-        self.port: int = port 
+        self.port: int = port
+        self.watcher: None|aionotify.Watcher=None
         self.active_connections: list[str] = []
         self.tasks: list[asyncio.Task] = []
         
-    def is_to_be_processed(self, path: str, change: int) -> bool:
+    def is_to_be_processed(self, path: str, flags: int) -> bool:
         """Checker to determine if a path should be processed
 
         Parameters
@@ -214,19 +226,20 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         path : str
             path name
 
-        change : int
-            integer indication the change (1 added, 2 modified, 3 deleted)
+        flags : int
+            integer indication the change CREATE or DELETE
 
         Returns
         -------
         bool
             True if processing is required.
         """
-        if change == Change.added or change == Change.deleted:
+        logger.debug(f"is_to_be_processed(): path: {path} flags:{flags} test: {flags == aionotify.Flags.CREATE}")
+        if flags == aionotify.Flags.CREATE:
             return path in self.devices
         return False
 
-    async def process_file(self, device: str, change: int) -> int | bool:
+    async def process_file(self, device: str, flags:int) -> int | bool:
         """ Coroutine for taking action for device file
 
         Parameters
@@ -242,8 +255,9 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         None
 
         """
-        logger.debug(f"device:{device} change:{change}")
-        if change == 1 and device not in self.active_connections:
+        logger.debug(f"device:{device} flags:{flags}")
+        if flags == aionotify.Flags.CREATE and device not in self.active_connections:
+            await asyncio.sleep(0.5) # give udev time to setup the device.
             result = await self.handle_connection(device)
             return result
         return 0 # all well
@@ -271,6 +285,39 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         self.active_connections.remove(device)
         return result
 
+
+    async def setup_watcher(self):
+        self.watcher = aionotify.Watcher()
+        alias: str = 'dev'
+        path: str = self.top_directory
+        self.watcher.watch(alias=alias,
+                           path=path,
+                           flags=aionotify.Flags.CREATE|aionotify.Flags.DELETE)
+        self.alias_mapping[alias] = path
+        logger.debug(f"Added watcher for {self.top_directory}.")
+        await self.watcher.setup()
+
+        
+    async def watch_directory(self) -> int:
+        await self.setup_watcher()
+        logger.debug("watch_directory(): Starting loop...")
+        while True:
+            event = await self.watcher.get_event()
+            logger.debug(event)
+            path = os.path.join(self.alias_mapping[event.alias], event.name)
+            if self.is_to_be_processed(path, event.flags):
+                logger.debug(f"{path} is to be processed. Flags: {event.flags}.")
+                received_error = await self.process_file(path, event.flags)
+                logger.debug(f"process_file({path}) returned {received_error}.")
+                if received_error:
+                    s = f"Processing file {path} for change {event.flags} returned an error ({received_error})."
+                    logger.info(s)
+                    break
+            else:
+                logger.debug(f"{path}:{event.flags} is not marked to be processed.")    
+        logger.info(f"Stopped monitoring filesystem under {self.top_directory}.")
+        return received_error
+
     async def start(self) -> None:
         """ Custom entry point, which checks for already existing serial ports
             and handles these if configured so.
@@ -292,34 +339,27 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
             # COMMS_ERROR_TCP. In all other cases discard the done
             # task and continue awaiting the pending ones. Last one
             # standing is always main.
-
+            mesg = ''
             for _t in done:
-                if _t.get_name() == "main" or (_t.get_name() != "main" and _t.result() == COMMS_ERROR_TCP):
+                logger.error(f"Error occured in task {_t.get_name()} with result: {_t.result()}.")
+                if _t.get_name() == "main":
+                    errorno = _t.result()
+                    if errorno==COMMS_ERROR_SERIAL:
+                        mesg = "Serial communication error. Unspecified"
+                    elif errorno==COMMS_ERROR_SERIAL_INITIALISATION:
+                        mesg = "Could not initialise serial device."
+                    elif errorno==COMMS_ERROR_TCP_INITIALISATION:
+                        mesg = "Could not initialise connection to server."
+                elif _t.get_name() != "main" and _t.result() == COMMS_ERROR_TCP:
                     # server must have disappeared when an established
                     # connection already existed.
+                    mesg = "Exiting due to lost connection to server."
+                if mesg:
                     with open("/dev/stderr", "w") as fp:
-                        fp.write("Fatal error: Exiting due to lost connection to server.\n")
-                    sys.exit(ERROR_CODE_TCP_CONNECTION_LOST)
+                        fp.write(f"Fatal error: {mesg}\n")
+                    sys.exit(errorno)
                 
 logger = logging.getLogger(__name__)
-
-
-
-    # async def create_socat_instance(self, device):
-    #     logger.debug("Creating instance")
-    #     task = await asyncio.create_subprocess_exec("/usr/bin/socat",
-    #                                                 f"FILE:{device},b115200,raw,echo=0",
-    #                                                 f"TCP:localhost:{self.port}",
-    #                                                 stdout=asyncio.subprocess.PIPE,
-    #                                                 stderr=asyncio.subprocess.PIPE)
-    #     logger.debug(f"socat instance Created (pid: {task.pid}).")
-    #     await task.wait()
-    #     async for line in task.stdout:
-    #         logger.debug(f"stdout: {line}")
-    #     async for line in task.stderr:
-    #         logger.debug(f"stderr: {line}")
-    #     logger.debug(f"Socat exit code : {task.returncode}")
-    #     return task
 
 
 

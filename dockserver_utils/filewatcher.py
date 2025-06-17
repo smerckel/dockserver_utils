@@ -41,13 +41,14 @@ class AsynchronousDirectoryMonitorBase(ABC):
         pass
 
     @abstractmethod
-    async def watch_directory(self) -> None:
+    async def watch_directory(self) -> None|int:
         pass
     
-    async def run(self) -> None:
+    async def run(self) -> None|int:
         ''' Asynchronous entry method
         '''
-        await self.watch_directory()
+        result = await self.watch_directory()
+        return result
 
 
     
