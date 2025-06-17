@@ -85,14 +85,14 @@ async def copy_file(src, dst):
     
 @pytest.mark.asyncio
 async def test_managing_mcg(setup_tmpdir):
-    dst = os.path.join(setup_tmpdir, 'from-glider')
-    os.mkdir(dst)
+    dst = os.path.join(setup_tmpdir, 'simulator/from-glider')
+    os.makedirs(dst)
     src = os.path.join(DATA_DIR,"01600001.dcd")
     tasks = []
     tasks.append(asyncio.create_task(copy_file(src, dst)))
     file_renamer = fileDecompressor.DBDMLGFileRenamer()
-    fdc = fileDecompressor.AsynchronousFileDecompressor(top_directory=dst,
-                                           file_renamer = file_renamer)
+    fdc = fileDecompressor.AsynchronousFileDecompressorAionotify(top_directory=setup_tmpdir,
+                                                                 file_renamer = file_renamer)
     tasks.append(asyncio.create_task(fdc.run()))
     done, pending = await asyncio.wait(tasks, timeout=0.4)
     for _t in pending:
@@ -103,14 +103,14 @@ async def test_managing_mcg(setup_tmpdir):
 
 @pytest.mark.asyncio
 async def test_managing_ccc(setup_tmpdir):
-    dst = os.path.join(setup_tmpdir, 'from-glider')
-    os.mkdir(dst)
+    dst = os.path.join(setup_tmpdir, 'simulator/from-glider')
+    os.makedirs(dst)
     src = os.path.join(DATA_DIR,"daad1b20.ccc")
     tasks = []
     tasks.append(asyncio.create_task(copy_file(src, dst)))
     file_renamer = fileDecompressor.DBDMLGFileRenamer()
-    fdc = fileDecompressor.AsynchronousFileDecompressor(top_directory=dst,
-                                           file_renamer = file_renamer)
+    fdc = fileDecompressor.AsynchronousFileDecompressorAionotify(top_directory=setup_tmpdir,
+                                                                 file_renamer = file_renamer)
     tasks.append(asyncio.create_task(fdc.run()))
     done, pending = await asyncio.wait(tasks, timeout=0.4)
     for _t in pending:
