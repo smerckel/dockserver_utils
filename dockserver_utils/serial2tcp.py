@@ -353,6 +353,7 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
                 elif _t.get_name() != "main" and _t.result() == COMMS_ERROR_TCP:
                     # server must have disappeared when an established
                     # connection already existed.
+                    errorno = _t.result()
                     mesg = "Exiting due to lost connection to server."
                 if mesg:
                     with open("/dev/stderr", "w") as fp:
