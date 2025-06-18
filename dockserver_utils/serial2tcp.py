@@ -23,11 +23,9 @@ COMMS_ERROR_TCP_INITIALISATION = 4
 # Buffer size of StreamReaders.
 READBUFFER = 256
 
-# We need to replace \n by \r if we use nc as dockserver.
-# This breaks (sometimes) the binary data transfer. So in production
-# we should do NO translation!
-TRANSLATE_TCP_TO_SERIAL_INPUT = False
-
+        
+        
+    
 class Serial2TCP(object):
     """ Class for bidirection relaying of binary data between a serial port and a TCP port
 
@@ -41,79 +39,22 @@ class Serial2TCP(object):
         TCP port number of server
     """
     def __init__(self, device: str, host: str, port: int):
-        self.device = device
-        self.host = host
-        self.port = port
+        self.device: str = device
+        self.host: str = host
+        self.port: int = port
         
-    async def read_from_serial(self,
-                               ser_reader: asyncio.StreamReader,
-                               tcp_writer: asyncio.StreamWriter) -> None:
-        """ Mono-directional communication : reading from serial; writing to TCP
+        self.ser_reader: asyncio.StreamReader | None = None
+        self.ser_writer: asyncio.StreamWriter | None = None
+        self.tcp_reader: asyncio.StreamReader | None = None
+        self.tcp_writer: asyncio.StreamWriter | None = None
 
-        Asyncio coroutine.
         
-        Parameters
-        ----------
-        ser_reader : asyncio.StreamReader
-            stream reader for serial device
-        tcp_writer : asyncio.StreamWriter
-            stream writer for TCP connection
-
-        """
-        while True:
-            try:
-                data = await ser_reader.read(READBUFFER)
-            except serial_asyncio.serial.SerialException:
-                tcp_writer.close()
-                await tcp_writer.wait_closed()
-                logger.debug("Encounter a reading problem in read_from_serial(). Closed down TCP writer...")
-                break
-            if not data:
-                break
-            # Send the message
-            tcp_writer.write(data)
-            await tcp_writer.drain()
-        logger.debug("Exiting from read_from_serial().")
-        
-    async def write_to_serial(self,
-                              ser_writer: asyncio.StreamWriter,
-                              tcp_reader: asyncio.StreamReader) -> None:
-        """ Mono-directional communication : reading from TCP; writing to serial
-
-        Asyncio coroutine.
-        
-        Parameters
-        ----------
-        ser_writer : asyncio.StreamWriter
-            stream writer for serial device
-        tcp_reader : asyncio.StreamReader
-            stream reader for TCP connection
-
-        """ 
-        while True:
-            data = await tcp_reader.read(READBUFFER)
-            if not data:
-                break
-            if TRANSLATE_TCP_TO_SERIAL_INPUT:
-                s = "Serial input translation active. Do NOT do this in production!"
-                logger.warning(s)
-                data = data.replace(b"\n", b"\r")          
-            ser_writer.write(data)
-            await ser_writer.drain()
-        logger.debug("Exiting from write_to_serial().")
-            
-    
-    async def initialise_connection(self) -> tuple[dict[str, asyncio.Task], 
-                                                   dict[str,
-                                                        dict[str, asyncio.StreamWriter|asyncio.StreamReader]
-                                                        ]
-                                                   ]:
+    async def initialise_serial_connection(self):
         """ Establishes connection to serial device and TCP server.
 
         Asyncio coroutine.
 
         """
-        #await asyncio.sleep(1)
         ser_reader, ser_writer = \
             await serial_asyncio.open_serial_connection(url=self.device,
                                                         baudrate=115200,
@@ -122,15 +63,121 @@ class Serial2TCP(object):
                                                         stopbits=1,
                                                         timeout=0,
                                                         reset_input_buffer=True)
-        tcp_reader, tcp_writer = \
-            await asyncio.open_connection(self.host, self.port)
-        read_task = asyncio.create_task(self.read_from_serial(ser_reader, tcp_writer))
-        write_task = asyncio.create_task(self.write_to_serial(ser_writer, tcp_reader))
-        tasks = dict(read=read_task, write=write_task)
-        transports = dict(read=dict(reader=ser_reader, writer=tcp_writer),
-                          write=dict(writer=ser_writer, reader=tcp_reader))
-        return tasks, transports
+        self.ser_reader = ser_reader
+        self.ser_writer = ser_writer
         
+
+    async def initialise_tcp_connection(self) -> int:
+        """ Establishes connection to serial device and TCP server.
+
+        Asyncio coroutine.
+
+        """
+        try:
+            tcp_reader, tcp_writer = \
+                await asyncio.open_connection(self.host, self.port)
+        except (Exception, OSError) as e:
+            logger.debug(f"Could not connect to {self.host}:{self.port}")
+            return COMMS_ERROR_TCP_INITIALISATION
+        else:
+            self.tcp_reader = tcp_reader
+            self.tcp_writer = tcp_writer
+            logger.info(f"TCP connection to {self.host}:{self.port} established.")
+            return COMMS_NOERROR
+        
+    async def close_tcp_connection(self):
+        self.tcp_writer.close()
+        await tcp_writer.wait_closed()
+        logger.debug("close_tcp_connection: FIXME do we need to do seomthing with the reader too?")
+        # Do NOT forget!
+        self.tcp_reader = None
+        self.tcp_writer = None
+         
+    @property
+    def has_tcp_backend(self):
+        return not (self.tcp_writer is None)
+
+    async def ser_data_filter(self, data: bytes|None=None) -> int:
+        # Here we can decide when to open or close a tcp connection.
+        # For now just open one if not already done.
+        # If argument is None, then this method is called before any data has arrived yet.
+        result = COMMS_NOERROR
+        if self.tcp_reader is None:
+            result = await self.initialise_tcp_connection()
+        return result
+        # depending on the data we get, we may also call await self.close_tcp_connection()
+        
+    async def tcp_data_filter(self, data: bytes) -> int:
+        # Here we can decide what we do depending on info from the glider.
+        return COMMS_NOERROR
+
+        
+            
+    async def ser_read_to_tcp_write(self) -> int:
+        """ Mono-directional communication : reading from serial; writing to TCP
+
+        Asyncio coroutine.
+        
+        """
+        result = COMMS_NOERROR
+        while True:
+            if not self.has_tcp_backend:
+                result = await self.ser_data_filter()
+                if result != COMMS_NOERROR:
+                    break
+            try:
+                data = await self.ser_reader.read(READBUFFER)
+            except serial_asyncio.serial.SerialException as e:
+                if self.has_tcp_backend:
+                    self.tcp_writer.close()
+                    await self.tcp_writer.wait_closed()
+                    logger.debug("Encounter a reading problem in reading from serial(). Closed down TCP writer...")
+                    break
+            if not data:
+                break
+            result = await self.ser_data_filter()
+            if result != COMMS_NOERROR:
+                break
+            # Send the message only if there is a tcp backend
+            if self.has_tcp_backend:
+                self.tcp_writer.write(data)
+                await self.tcp_writer.drain()
+        logger.debug("Exiting from read_from_serial().")
+        return result
+
+
+    async def tcp_read_to_ser_write(self) -> int:
+        """ Mono-directional communication : reading from TCP; writing to serial
+
+        Asyncio coroutine.
+        
+        """
+        result = COMMS_NOERROR
+        while True:
+            if not self.has_tcp_backend:
+                await asyncio.sleep(0.5)
+                continue
+            try:
+                data = await self.tcp_reader.read(READBUFFER)
+            except Exception as e:
+                logger.debug(f"IDENTIFY ERROR: {type(e)}")
+                self.ser_writer.close()
+                await self.ser_writer.wait_closed()
+                logger.debug("Encounter a reading problem in reading from TCP. Closed down serial writer...")
+                result=COMMS_ERROR_SERIAL
+                break
+            if not data:
+                break
+            result = await self.tcp_data_filter(data)
+            if result != COMMS_NOERROR:
+                break
+            # Send the message only if there is a tcp backend
+            self.ser_writer.write(data)
+            await self.ser_writer.drain()
+        logger.debug("Exiting from read_from_serial().")
+        return result
+
+    
         
     async def run(self) -> int:
         """ Entry method
@@ -152,40 +199,42 @@ class Serial2TCP(object):
         
         """
         logger.debug(f"Starting connection {self.device} <-> {self.host}:{self.port}.")
+
         try:
-            tasks, transports = await self.initialise_connection()
+            await self.initialise_serial_connection()
         except serial_asyncio.serial.serialutil.SerialException as e:
             logger.error(f"Error occured: {e.args[-1]}")
             return COMMS_ERROR_SERIAL_INITIALISATION
-        except Exception as e:
-            logger.error(f"Error occured: {type(e)}")
-            return COMMS_ERROR_TCP_INITIALISATION
+        logger.info(f"Serial device {self.device} connected.")
+
+        tasks: dict[str, asyncio.Task] = {}
+        tasks["ser_to_tcp"] = asyncio.create_task(self.ser_read_to_tcp_write(), name="ser_reader_to_tcp_write")
+        tasks["tcp_to_ser"] = asyncio.create_task(self.tcp_read_to_ser_write(), name="tcp_reader_to_ser_write")
         
-        logger.info(f"Started connection {self.device} <-> {self.host}:{self.port}.")
+        
         # Wait for one of the tasks to complete (return by catching execption).
         done, pending = await asyncio.wait(tasks.values(),
                                            return_when=asyncio.FIRST_COMPLETED)
         logger.debug("One task completed. Closing down....")
+
         result = COMMS_NOERROR
-        if tasks['write'] in pending: # serial connection gave up
-            ser_writer = transports['write']['writer']
-            ser_writer.close()
+        if tasks['ser_to_tcp'] in done: # serial connection gave up
+            self.ser_writer.close()
             try:
-                await ser_writer.wait_closed()
+                await self.ser_writer.wait_closed()
             except serial_asyncio.serial.SerialException:
                 pass
             logger.debug("Serial writer closed.")
-            if not tasks['write'].cancelled():
-                tasks['write'].cancel()
+            if not tasks['tcp_to_ser'].cancelled():
+                tasks['tcp_to_ser'].cancel()
                 await asyncio.sleep(0.3)
             result = COMMS_ERROR_SERIAL
-        elif tasks['read'] in pending: # tcp connection gave up
-            tcp_writer = transports['read']['writer']
-            tcp_writer.close()
-            await tcp_writer.wait_closed()
+        elif tasks['tcp_to_ser'] in done: # tcp connection gave up
+            self.tcp_writer.close()
+            await self.tcp_writer.wait_closed()
             logger.debug("TCP writer closed.")
-            if not tasks['read'].cancelled():
-                tasks['read'].cancel()
+            if not tasks['ser_to_tcp'].cancelled():
+                tasks['ser_to_tcp'].cancel()
                 await asyncio.sleep(0.3)
             result = COMMS_ERROR_TCP
         status = [i.cancelled() for i in pending]
@@ -193,6 +242,38 @@ class Serial2TCP(object):
         logger.info(f"Closed connection {self.device} <-> {self.host}:{self.port}.")
         return result
 
+
+
+        
+    # async def write_to_serial(self,
+    #                           ser_writer: asyncio.StreamWriter,
+    #                           tcp_reader: asyncio.StreamReader) -> None:
+    #     """ Mono-directional communication : reading from TCP; writing to serial
+
+    #     Asyncio coroutine.
+        
+    #     Parameters
+    #     ----------
+    #     ser_writer : asyncio.StreamWriter
+    #         stream writer for serial device
+    #     tcp_reader : asyncio.StreamReader
+    #         stream reader for TCP connection
+
+    #     """ 
+    #     while True:
+    #         data = await tcp_reader.read(READBUFFER)
+    #         if not data:
+    #             break
+    #         if TRANSLATE_TCP_TO_SERIAL_INPUT:
+    #             s = "Serial input translation active. Do NOT do this in production!"
+    #             logger.warning(s)
+    #             data = data.replace(b"\n", b"\r")          
+    #         ser_writer.write(data)
+    #         await ser_writer.drain()
+    #     logger.debug("Exiting from write_to_serial().")
+            
+
+    
     
 class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
     """ Monitor to forward Serial to TCP connections
@@ -350,6 +431,8 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
                         mesg = "Could not initialise serial device."
                     elif errorno==COMMS_ERROR_TCP_INITIALISATION:
                         mesg = "Could not initialise connection to server."
+                    elif errorno==COMMS_ERROR_TCP:
+                        mesg = "Exiting due to lost connection to server."
                 elif _t.get_name() != "main" and _t.result() == COMMS_ERROR_TCP:
                     # server must have disappeared when an established
                     # connection already existed.
@@ -359,6 +442,10 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
                     # server was not available during initialisation.
                     errorno = _t.result()
                     mesg = "Failed to start, because the dockserver could not be connected to."
+                else:
+                    mesg = f"Unhandled error occurred: name {_t.get_name()} with result {_t.result()}"
+                    logger.debug(mesg)
+                    
                 if mesg:
                     logger.error(mesg)
                     with open("/dev/stderr", "w") as fp:
