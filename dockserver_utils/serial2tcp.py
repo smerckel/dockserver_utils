@@ -142,7 +142,7 @@ class Serial2TCP(object):
             if self.has_tcp_backend:
                 self.tcp_writer.write(data)
                 await self.tcp_writer.drain()
-        logger.debug("Exiting from read_from_serial().")
+        logger.debug(f"Exiting from ser_read_to_tcp_write with error {result}.")
         return result
 
 
@@ -155,6 +155,7 @@ class Serial2TCP(object):
         result = COMMS_NOERROR
         while True:
             if not self.has_tcp_backend:
+                result = COMMS_ERROR_TCP
                 await asyncio.sleep(0.5)
                 continue
             try:
@@ -174,7 +175,7 @@ class Serial2TCP(object):
             # Send the message only if there is a tcp backend
             self.ser_writer.write(data)
             await self.ser_writer.drain()
-        logger.debug("Exiting from read_from_serial().")
+        logger.debug(f"Exiting from tcp_read_to_ser_write() with {result}.")
         return result
 
     
@@ -208,8 +209,8 @@ class Serial2TCP(object):
         logger.info(f"Serial device {self.device} connected.")
 
         tasks: dict[str, asyncio.Task] = {}
-        tasks["ser_to_tcp"] = asyncio.create_task(self.ser_read_to_tcp_write(), name="ser_reader_to_tcp_write")
-        tasks["tcp_to_ser"] = asyncio.create_task(self.tcp_read_to_ser_write(), name="tcp_reader_to_ser_write")
+        tasks["ser_to_tcp"] = asyncio.create_task(self.ser_read_to_tcp_write(), name="ser_to_tcp")
+        tasks["tcp_to_ser"] = asyncio.create_task(self.tcp_read_to_ser_write(), name="tcp_to_ser")
         
         
         # Wait for one of the tasks to complete (return by catching execption).
@@ -218,28 +219,31 @@ class Serial2TCP(object):
         logger.debug("One task completed. Closing down....")
 
         result = COMMS_NOERROR
-        if tasks['ser_to_tcp'] in done: # serial connection gave up
-            self.ser_writer.close()
-            try:
-                await self.ser_writer.wait_closed()
-            except serial_asyncio.serial.SerialException:
-                pass
-            logger.debug("Serial writer closed.")
-            if not tasks['tcp_to_ser'].cancelled():
-                tasks['tcp_to_ser'].cancel()
-                await asyncio.sleep(0.3)
-            result = COMMS_ERROR_SERIAL
-        elif tasks['tcp_to_ser'] in done: # tcp connection gave up
-            self.tcp_writer.close()
-            await self.tcp_writer.wait_closed()
-            logger.debug("TCP writer closed.")
-            if not tasks['ser_to_tcp'].cancelled():
-                tasks['ser_to_tcp'].cancel()
-                await asyncio.sleep(0.3)
-            result = COMMS_ERROR_TCP
+        for _t in done:
+            name = _t.get_name()
+            result = _t.result()
+            if name == 'ser_to_tcp': # serial connection gave up
+                self.ser_writer.close()
+                try:
+                    await self.ser_writer.wait_closed()
+                except serial_asyncio.serial.SerialException:
+                    pass
+                logger.debug("Serial writer closed.")
+                if not tasks['tcp_to_ser'].cancelled():
+                    tasks['tcp_to_ser'].cancel()
+                    await asyncio.sleep(0.3)
+            elif name == 'tcp_to_ser': # tcp connection gave up
+                self.tcp_writer.close()
+                await self.tcp_writer.wait_closed()
+                logger.debug("TCP writer closed.")
+                if not tasks['ser_to_tcp'].cancelled():
+                    tasks['ser_to_tcp'].cancel()
+                    await asyncio.sleep(0.3)
         status = [i.cancelled() for i in pending]
+        assert all(status)
         logger.debug(f"All pending tasks are cancelled: {all(status)}")
         logger.info(f"Closed connection {self.device} <-> {self.host}:{self.port}.")
+        logger.debug(f"Returning with {result}")
         return result
 
 
@@ -443,6 +447,7 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
                     errorno = _t.result()
                     mesg = "Failed to start, because the dockserver could not be connected to."
                 else:
+                    errorno=-1
                     mesg = f"Unhandled error occurred: name {_t.get_name()} with result {_t.result()}"
                     logger.debug(mesg)
                     
