@@ -199,17 +199,30 @@ class AsynchronousFileDecompressorAionotify(AsynchronousFileDecompressorBase):
                 if alias!='unknown':
                     self.watcher.watch(alias=alias, path=path,
                                        flags=aionotify.Flags.CREATE|aionotify.Flags.CLOSE_WRITE)
-                    self.alias_mapping[alias] = path
                     logger.debug(f"Added watcher for {alias}.")
-        # todo think of something to handle when new gliders are added.
+        # We also need to take care for when a glider new to the dockserver calls in.
+        self.watcher.watch(alias='root', path=self.top_directory, flags=aionotify.Flags.CREATE | aionotify.Flags.ISDIR)
         await self.watcher.setup()
 
+    async def add_new_glider(self, glider:str, path:str):
+        # give the dockserver some time to create all directories and files for this glider
+        await asyncio.sleep(0.5)
+        # check if we have a from-glider directory
+        wd = os.path.join(path, 'from-glider')
+        if glider != 'unknown' and os.path.exists(wd):
+            self.watcher.watch(alias=glider, path=wd,
+                               flags=aionotify.Flags.CREATE|aionotify.Flags.CLOSE_WRITE)
+            return True
+        else:
+            return False
         
     async def watch_directory(self) -> None:
         await self.setup_watcher()
         while True:
             event = await self.watcher.get_event()
-            path = os.path.join(self.alias_mapping[event.alias], event.name)
+            wd, _ = self.watcher.requests[event.alias]
+            path = os.path.join(wd, event.name)
+            logger.debug(event)
             if self.is_copied(path, event.flags) and self.is_to_be_processed(path):
                 logger.debug(f"{path} is to be processed.")
                 received_error = await self.process_file(path)
@@ -218,6 +231,14 @@ class AsynchronousFileDecompressorAionotify(AsynchronousFileDecompressorBase):
                     s = f"Processing file {path} for change {change} returned an error ({received_error})."
                     logger.info(s)
                     break
+            elif event.alias=='root' and event.flags==aionotify.Flags.CREATE | aionotify.Flags.ISDIR:
+                result = await self.add_new_glider(event.name, path)
+                if result:
+                    logger.info(f"New glider ({event.name}) detected.")
+                    logger.info(f"Added watcher for {event.name}.")
+                else:
+                    logger.debug("New directory was created, but seems not to be a glider directory.")
+                                
         logger.info(f"Stopped monitoring filesystem under {self.top_directory}.")
     
             

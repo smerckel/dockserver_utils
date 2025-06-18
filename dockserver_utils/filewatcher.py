@@ -30,7 +30,6 @@ class AsynchronousDirectoryMonitorBase(ABC):
     
     def __init__(self, top_directory: str):
         self.top_directory:str = top_directory
-        self.alias_mapping: dict[str, str] = {}
         
     @abstractmethod
     def is_to_be_processed(self, path: str, flags: int|None=None) -> bool:

@@ -10,6 +10,55 @@ import toml
 from . import serial2tcp
 from . import fileDecompressor
 
+LOGDIR = "/var/local/log"
+
+def get_logger(name, level, system_level=logging.INFO):
+    try:
+        os.makedirs(LOGDIR)
+    except PermissionError:
+        log_dir_created = False
+    else:
+        log_dir_created = True
+
+    loggers = [serial2tcp.logger, fileDecompressor.logger]
+    logger = logging.getLogger(name)
+    loggers.append(logger)
+
+    for _l in loggers:
+        _l.setLevel(level)
+
+    if log_dir_created:
+        log_filename = os.path.join(LOGDIR, f"{name}.log")
+    else:
+        log_filename = f"{name}.log"
+    # Create handlers
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setLevel(level)
+
+    system_handler = logging.StreamHandler(sys.stdout)
+    system_handler.setLevel(level)
+
+    # Create formatters and add them to handlers
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    file_handler.setFormatter(formatter)
+    system_handler.setFormatter(formatter)
+
+    # Write to the system logs.
+    # Create a SysLogHandler
+    #syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
+    #syslog_handler.setLevel(system_level)
+    #syslog_handler.setFormatter(formatter)
+    
+    # Add handlers to the loggers
+    for _l in loggers:
+        _l.addHandler(file_handler)
+        _l.addHandler(system_handler)
+        #_l.addHandler(syslog_handler)
+    if not log_dir_created:
+        logger.debug(f"Could not create log file in {LOGDIR}. Using local directory instead.")
+    return logger
+
+
 class Config(abc.ABC):
     def __init__(self):
         super().__init__()
@@ -53,11 +102,7 @@ class serialTCPConnectorConfig(Config):
                               
                                                    
 def serialTCPConnector():
-    log_level = logging.DEBUG
-    logging.basicConfig(level=logging.WARNING)
-    serial2tcp.logger.setLevel(log_level)
-    logger = logging.getLogger(__name__)
-    logger.setLevel(log_level)
+    logger = get_logger('fileDecompressorHelper', logging.DEBUG, logging.INFO)
 
     config = serialTCPConnectorConfig()
     parser = argparse.ArgumentParser(
@@ -113,12 +158,7 @@ def serialTCPConnector():
 
 
 def fileDecompressorHelper():
-    log_level = logging.DEBUG
-    logging.basicConfig(level=logging.WARNING)
-    fileDecompressor.logger.setLevel(log_level)
-    logger = logging.getLogger(__name__)
-    logger.setLevel(log_level)
-
+    logger = get_logger('fileDecompressorHelper', logging.DEBUG, logging.INFO)
 
     
     s = """A helper program for older Teledyne WebbResearch's dockserver programs to

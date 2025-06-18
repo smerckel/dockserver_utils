@@ -293,7 +293,6 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         self.watcher.watch(alias=alias,
                            path=path,
                            flags=aionotify.Flags.CREATE|aionotify.Flags.DELETE)
-        self.alias_mapping[alias] = path
         logger.debug(f"Added watcher for {self.top_directory}.")
         await self.watcher.setup()
 
@@ -304,7 +303,8 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         while True:
             event = await self.watcher.get_event()
             logger.debug(event)
-            path = os.path.join(self.alias_mapping[event.alias], event.name)
+            wd, _ = self.watcher.requests[event.alias]
+            path = os.path.join(wd, event.name)
             if self.is_to_be_processed(path, event.flags):
                 logger.debug(f"{path} is to be processed. Flags: {event.flags}.")
                 received_error = await self.process_file(path, event.flags)
@@ -355,7 +355,12 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
                     # connection already existed.
                     errorno = _t.result()
                     mesg = "Exiting due to lost connection to server."
+                elif _t.get_name() != "main" and _t.result() == COMMS_ERROR_TCP_INITIALISATION:
+                    # server was not available during initialisation.
+                    errorno = _t.result()
+                    mesg = "Failed to start, because the dockserver could not be connected to."
                 if mesg:
+                    logger.error(mesg)
                     with open("/dev/stderr", "w") as fp:
                         fp.write(f"Fatal error: {mesg}\n")
                     sys.exit(errorno)
