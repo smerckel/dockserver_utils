@@ -56,11 +56,12 @@ class Serial2TCP(object):
         self.ser_writer: asyncio.StreamWriter | None = None
         self.tcp_reader: asyncio.StreamReader | None = None
         self.tcp_writer: asyncio.StreamWriter | None = None
-
+        
+        self.carrier_detect_status: int
         if serial_option == 'direct':
-            self.carrier_detect_status: int = CARRIER_DETECT_YES
+            self.carrier_detect_status = CARRIER_DETECT_YES
         else:
-            self.carrier_detect_status: int = CARRIER_DETECT_UNDEFINED
+            self.carrier_detect_status = CARRIER_DETECT_UNDEFINED
         
     async def initialise_serial_connection(self):
         """ Establishes connection to serial device and TCP server.
@@ -105,7 +106,7 @@ class Serial2TCP(object):
         """
         self.tcp_writer.close()
         await self.tcp_writer.wait_closed()
-        logger.debug(f"Closed TCP connection ({self.device}).")
+        logger.info(f"Closed TCP connection ({self.device}).")
         # Do NOT forget!
         self.tcp_reader = None
         self.tcp_writer = None
@@ -124,10 +125,6 @@ class Serial2TCP(object):
             await self.close_tcp_connection()
         return result
     
-    @property
-    def has_tcp_backend(self):
-        return not (self.tcp_writer is None)
-
     async def ser_data_filter(self, data: bytes|None=None) -> int:
         # Here we can decide when to open or close a tcp connection.
         # For now just open one if not already done.
@@ -153,7 +150,11 @@ class Serial2TCP(object):
         try:
             while True:
                 try:
-                    data = await self.ser_reader.read(READBUFFER)
+                    if self.ser_reader is not None:
+                        data = await self.ser_reader.read(READBUFFER)
+                    else:
+                        errrorno = COMMS_ERROR_SERIAL
+                        break
                 except serial_asyncio.serial.SerialException:
                     errorno = COMMS_ERROR_SERIAL
                     break
@@ -163,7 +164,7 @@ class Serial2TCP(object):
                 if errorno != COMMS_NOERROR:
                     break
                 # Send the message only if there is a tcp backend
-                if self.has_tcp_backend:
+                if self.tcp_writer is not None:
                     self.tcp_writer.write(data)
                     try:
                         await self.tcp_writer.drain()
@@ -171,7 +172,7 @@ class Serial2TCP(object):
                         errorno = COMMS_ERROR_TCP
                         break
         finally:
-            if self.has_tcp_backend:
+            if self.tcp_writer is not None:
                 try:
                     self.tcp_writer.close()
                     await self.tcp_writer.wait_closed()
@@ -185,7 +186,11 @@ class Serial2TCP(object):
         try:
             while True:
                 try:
-                    carrier_detect = self.ser_writer._transport.serial.cd
+                    if self.ser_writer is not None:
+                        carrier_detect = self.ser_writer._transport.serial.cd
+                    else:
+                        errorno = COMMS_ERROR_SERIAL
+                        break
                 except (OSError, AttributeError):
                     errrorno = COMMS_ERROR_SERIAL
                     break
@@ -196,18 +201,19 @@ class Serial2TCP(object):
                 if _status != self.carrier_detect_status:
                     self.carrier_detect_status = _status
                     logger.debug(f"Carrier detect: {_status} for {self.device}")
-                    if _status == CARRIER_DETECT_YES and not self.has_tcp_backend:
+                    if _status == CARRIER_DETECT_YES and self.tcp_writer is None:
                         errorno = await self.initialise_tcp_connection()                            
                         if errorno: # Connection error.
                             break
-                    elif _status == CARRIER_DETECT_NO and self.has_tcp_backend:
+                    elif _status == CARRIER_DETECT_NO and self.tcp_writer is not None:
                         await self.close_tcp_connection()
                 await asyncio.sleep(0.1)
         finally:
             logger.debug(f"monitor_carrier_detect(): cleaning up writers...")
             try:
-                self.ser_writer.close()
-                await self.ser_writer.wait_closed()
+                if self.ser_writer is not None:
+                    self.ser_writer.close()
+                    await self.ser_writer.wait_closed()
             except:
                 pass # ignore any errors at this stage.
         logger.debug(f"Exiting with {errorno} (device={self.device}).")
@@ -223,7 +229,7 @@ class Serial2TCP(object):
         data = None
         try:
             while True:
-                if self.has_tcp_backend:
+                if self.tcp_reader is not None:
                     try:
                         data = await self.tcp_reader.read(READBUFFER)
                     except Exception as e:
@@ -231,7 +237,11 @@ class Serial2TCP(object):
                         errorno=COMMS_ERROR_TCP
                         break
                     if data:
-                        self.ser_writer.write(data)
+                        if self.ser_writer is not None:
+                            self.ser_writer.write(data)
+                        else:
+                            errorno = COMMS_ERROR_SERIAL
+                            break
                         try:
                             await self.ser_writer.drain()
                         except Exception as e:
@@ -247,7 +257,7 @@ class Serial2TCP(object):
                         # 100% processor time. Just sleep for a second.
                         await asyncio.sleep(1) #
                     
-                elif not self.has_tcp_backend and self.carrier_detect_status==CARRIER_DETECT_YES:
+                elif self.tcp_reader is None and self.carrier_detect_status==CARRIER_DETECT_YES:
                     # we have a carrier but no server access.
                         result = COMMS_ERROR_TCP
                         break
@@ -258,8 +268,9 @@ class Serial2TCP(object):
         finally:
             # this block is executed when the while loop breaks, or if the task is cancelled
             logger.debug(f"tcp_read_to_ser_write(): cleaning up writers...")
-            self.ser_writer.close()
-            await self.ser_writer.wait_closed()
+            if self.ser_writer is not None:
+                self.ser_writer.close()
+                await self.ser_writer.wait_closed()
         logger.debug(f"Exiting with {errorno} (device={self.device}).")
         return errorno
 
@@ -367,11 +378,11 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         self.serial_options: dict[str,str] = serial_options
         self.host: str = host
         self.port: int = port
-        self.watcher: None|aionotify.Watcher=None
+        self.watcher: aionotify.Watcher
         self.active_connections: list[str] = []
         self.tasks: list[asyncio.Task] = []
         
-    def is_to_be_processed(self, path: str, flags: int) -> bool:
+    def is_to_be_processed(self, path: str, flags: int|None=None) -> bool:
         """Checker to determine if a path should be processed
 
         Parameters
@@ -392,7 +403,7 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
             return path in self.devices
         return False
 
-    async def process_file(self, device: str, flags:int) -> int | bool:
+    async def process_file(self, device: str, flags:int|None=None) -> int | bool:
         """ Coroutine for taking action for device file
 
         Parameters
@@ -444,8 +455,8 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
 
     async def setup_watcher(self):
         self.watcher = aionotify.Watcher()
-        alias: str = 'dev'
-        path: str = self.top_directory
+        alias = 'dev'
+        path = self.top_directory
         self.watcher.watch(alias=alias,
                            path=path,
                            flags=aionotify.Flags.CREATE|aionotify.Flags.DELETE)

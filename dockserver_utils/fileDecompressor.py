@@ -182,7 +182,7 @@ class AsynchronousFileDecompressorAionotify(AsynchronousFileDecompressorBase):
                                       
     def __init__(self, top_directory: str, file_renamer: GliderFileRenamer=DBDMLGFileRenamer()):
         super().__init__(top_directory, file_renamer)
-        self.watcher: aionotify.Watcher=None
+        self.watcher: aionotify.Watcher
         self.handled_files: list[str] = []
 
         
