@@ -105,7 +105,7 @@ class Serial2TCP(object):
         """
         self.tcp_writer.close()
         await self.tcp_writer.wait_closed()
-        logger.debug("Closed TCP connection.")
+        logger.debug(f"Closed TCP connection ({self.device}).")
         # Do NOT forget!
         self.tcp_reader = None
         self.tcp_writer = None
@@ -148,103 +148,120 @@ class Serial2TCP(object):
         Asyncio coroutine.
         
         """
-        result = COMMS_NOERROR
+        errorno = COMMS_NOERROR
         data = None
-        while True:
-            if not self.has_tcp_backend and self.carrier_detect_status==CARRIER_DETECT_YES:
-                result = await self.ser_data_filter()
-                if result != COMMS_NOERROR:
+        try:
+            while True:
+                try:
+                    data = await self.ser_reader.read(READBUFFER)
+                except serial_asyncio.serial.SerialException:
+                    errorno = COMMS_ERROR_SERIAL
                     break
-            try:
-                data = await self.ser_reader.read(READBUFFER)
-            except serial_asyncio.serial.SerialException as e:
+                if not data:
+                    break
+                errorno = await self.ser_data_filter()
+                if errorno != COMMS_NOERROR:
+                    break
+                # Send the message only if there is a tcp backend
                 if self.has_tcp_backend:
+                    self.tcp_writer.write(data)
+                    try:
+                        await self.tcp_writer.drain()
+                    except ConnectionResetError:
+                        errorno = COMMS_ERROR_TCP
+                        break
+        finally:
+            if self.has_tcp_backend:
+                try:
                     self.tcp_writer.close()
                     await self.tcp_writer.wait_closed()
-                    logger.debug("Encounter a reading problem in reading from serial(). Closed down TCP writer...")
-                    break
-            if not data:
-                break
-            result = await self.ser_data_filter()
-            if result != COMMS_NOERROR:
-                break
-            # Send the message only if there is a tcp backend
-            if self.has_tcp_backend:
-                self.tcp_writer.write(data)
-                await self.tcp_writer.drain()
-        logger.debug(f"Exiting from ser_read_to_tcp_write with error {result}.")
-        return result
+                except:
+                    pass #ignore any errors at this stage.
+        logger.debug(f"Exiting with {errorno} (device={self.device}).")
+        return errorno
 
     async def monitor_carrier_detect(self) -> int:
-        result = COMMS_NOERROR
-        if self.serial_option == 'direct':
-            # we should not monitor for any changes in CD.
+        errorno = COMMS_NOERROR
+        try:
             while True:
-                await asyncio.sleep(86400)
-    
-        while True:
-            if not self.ser_writer is None:
                 try:
                     carrier_detect = self.ser_writer._transport.serial.cd
-                except OSError:
-                    result = COMMS_ERROR_SERIAL
+                except (OSError, AttributeError):
+                    errrorno = COMMS_ERROR_SERIAL
                     break
                 if carrier_detect:
                     _status = CARRIER_DETECT_YES
                 else:
                     _status = CARRIER_DETECT_NO
                 if _status != self.carrier_detect_status:
-                    logger.debug(f"Carrier detect: {_status}")
-                    # change
-                    if _status == CARRIER_DETECT_YES:
-                        if self.tcp_reader is None:
-                            result = await self.initialise_tcp_connection()                            
-                            if result: # Connection error.
-                                break
-                            self.carrier_detect_status = _status
-                    if _status == CARRIER_DETECT_NO:
-                        if not self.tcp_reader is None:
-                            await self.close_tcp_connection()
-                        self.carrier_detect_status = _status
-            await asyncio.sleep(0.1)
-        return result
+                    self.carrier_detect_status = _status
+                    logger.debug(f"Carrier detect: {_status} for {self.device}")
+                    if _status == CARRIER_DETECT_YES and not self.has_tcp_backend:
+                        errorno = await self.initialise_tcp_connection()                            
+                        if errorno: # Connection error.
+                            break
+                    elif _status == CARRIER_DETECT_NO and self.has_tcp_backend:
+                        await self.close_tcp_connection()
+                await asyncio.sleep(0.1)
+        finally:
+            logger.debug(f"monitor_carrier_detect(): cleaning up writers...")
+            try:
+                self.ser_writer.close()
+                await self.ser_writer.wait_closed()
+            except:
+                pass # ignore any errors at this stage.
+        logger.debug(f"Exiting with {errorno} (device={self.device}).")
+        return errorno
     
-
-
     async def tcp_read_to_ser_write(self) -> int:
         """ Mono-directional communication : reading from TCP; writing to serial
 
         Asyncio coroutine.
         
         """
-        result = COMMS_NOERROR
-        while True:
-            if self.has_tcp_backend:
-                try:
-                    data = await self.tcp_reader.read(READBUFFER)
-                except Exception as e:
-                    logger.debug(f"IDENTIFY ERROR: {type(e)}")
-                    self.ser_writer.close()
-                    await self.ser_writer.wait_closed()
-                    logger.debug("Encounter a reading problem in reading from TCP. Closed down serial writer...")
-                    result=COMMS_ERROR_SERIAL
-                    break
-                if data:
-                    result = await self.tcp_data_filter(data)
-                    if result != COMMS_NOERROR:
+        errorno = COMMS_NOERROR
+        data = None
+        try:
+            while True:
+                if self.has_tcp_backend:
+                    try:
+                        data = await self.tcp_reader.read(READBUFFER)
+                    except Exception as e:
+                        logger.debug(f"IDENTIFY ERROR: {type(e)}")
+                        errorno=COMMS_ERROR_TCP
                         break
-                    self.ser_writer.write(data)
-                    await self.ser_writer.drain()
+                    if data:
+                        self.ser_writer.write(data)
+                        try:
+                            await self.ser_writer.drain()
+                        except Exception as e:
+                            logger.debug(f"Identify Error: {e}")
+                            errorno = COMMS_ERROR_SERIAL
+                            break
+                        errorno = await self.tcp_data_filter(data)
+                        if errorno:
+                            break
+                    else:
+                        # We don't have any data. We don't need to do
+                        # anything but to avoid taking this while loop
+                        # 100% processor time. Just sleep for a second.
+                        await asyncio.sleep(1) #
+                    
+                elif not self.has_tcp_backend and self.carrier_detect_status==CARRIER_DETECT_YES:
+                    # we have a carrier but no server access.
+                        result = COMMS_ERROR_TCP
+                        break
                 else:
-                    await asyncio.sleep(1) # give some time to close the tcp connection
-            else:
-                if self.carrier_detect_status==CARRIER_DETECT_YES:
-                    result = COMMS_ERROR_TCP
-                    break
-                else:
-                    await asyncio.sleep(1) 
-        logger.debug(f"Exiting from tcp_read_to_ser_write() with {result}.")
-        return result
+                    # no carrier/TCP conn. let's hope for better times.
+                    await asyncio.sleep(1)
+                
+        finally:
+            # this block is executed when the while loop breaks, or if the task is cancelled
+            logger.debug(f"tcp_read_to_ser_write(): cleaning up writers...")
+            self.ser_writer.close()
+            await self.ser_writer.wait_closed()
+        logger.debug(f"Exiting with {errorno} (device={self.device}).")
+        return errorno
 
     
         
@@ -284,7 +301,8 @@ class Serial2TCP(object):
         logger.info(f"Serial device {self.device} connected.")
 
         tasks: dict[str, asyncio.Task] = {}
-        tasks["CD_monitor"] = asyncio.create_task(self.monitor_carrier_detect(), name="CD_monitor")
+        if not self.serial_option == 'direct':
+            tasks["CD_monitor"] = asyncio.create_task(self.monitor_carrier_detect(), name="CD_monitor")
         tasks["ser_to_tcp"] = asyncio.create_task(self.ser_read_to_tcp_write(), name="ser_to_tcp")
         tasks["tcp_to_ser"] = asyncio.create_task(self.tcp_read_to_ser_write(), name="tcp_to_ser")
         
@@ -294,78 +312,33 @@ class Serial2TCP(object):
                                            return_when=asyncio.FIRST_COMPLETED)
         logger.debug("One task completed. Closing down....")
 
-        result = COMMS_NOERROR
+        errorno = COMMS_NOERROR
         for _t in done:
-            name = _t.get_name()
-            result = _t.result()
-            logger.debug(f"Examining done task: name {name}, result: {result}")
-            if name == 'ser_to_tcp': # serial connection gave up
-                self.ser_writer.close()
-                try:
-                    await self.ser_writer.wait_closed()
-                except serial_asyncio.serial.SerialException:
-                    pass
-                logger.debug("Serial writer closed.")
-                if not tasks['tcp_to_ser'].cancelled():
-                    tasks['tcp_to_ser'].cancel()
+            logger.debug(f"Done task {_t.get_name()} returned {_t.result()} (device: {self.device}).")            
+            errorno |= _t.result()
+        for _t in pending:
+            logger.debug(f"Pending task: {_t.get_name()} (device: {self.device}).")
 
-            elif name == 'tcp_to_ser': # tcp connection gave up
-                self.tcp_writer.close()
-                await self.tcp_writer.wait_closed()
-                logger.debug("TCP writer closed.")
-                if not tasks['ser_to_tcp'].cancelled():
-                    tasks['ser_to_tcp'].cancel()
-            elif name == 'CD_monitor': # checking for a carrier detect retured an error
-                self.ser_writer.close()
-                try:
-                    await self.ser_writer.wait_closed()
-                except serial_asyncio.serial.SerialException:
-                    pass
-                logger.debug("Serial writer closed.")
-                if not tasks['tcp_to_ser'].cancelled():
-                    tasks['tcp_to_ser'].cancel()
-                
-        # wait a bit for the cancelings to take effect
-        await asyncio.sleep(1)
-        status = [i.cancelled() for i in pending]
-        assert all(status)
-        logger.debug(f"All pending tasks are cancelled: {all(status)}")
-        logger.info(f"Closed connection {self.device} <-> {self.host}:{self.port}.")
-        logger.debug(f"Returning with {result}")
-        return result
-
-
-
-        
-    # async def write_to_serial(self,
-    #                           ser_writer: asyncio.StreamWriter,
-    #                           tcp_reader: asyncio.StreamReader) -> None:
-    #     """ Mono-directional communication : reading from TCP; writing to serial
-
-    #     Asyncio coroutine.
-        
-    #     Parameters
-    #     ----------
-    #     ser_writer : asyncio.StreamWriter
-    #         stream writer for serial device
-    #     tcp_reader : asyncio.StreamReader
-    #         stream reader for TCP connection
-
-    #     """ 
-    #     while True:
-    #         data = await tcp_reader.read(READBUFFER)
-    #         if not data:
-    #             break
-    #         if TRANSLATE_TCP_TO_SERIAL_INPUT:
-    #             s = "Serial input translation active. Do NOT do this in production!"
-    #             logger.warning(s)
-    #             data = data.replace(b"\n", b"\r")          
-    #         ser_writer.write(data)
-    #         await ser_writer.drain()
-    #     logger.debug("Exiting from write_to_serial().")
             
+        # pending tasks will be taken down automatically because of errors that will occur in them too.
+        await asyncio.wait(pending, timeout=1)
+        still_pending = []
+        for _t in pending:
+            if _t.done():
+                continue
+            logger.debug(f"Task {_t.get_name()} got not canceled. Try again.")
+            _t.cancel()
+            still_pending.append(_t)
+        if still_pending:
+            await asyncio.wait(still_pending, timeout=15)
+        for _t in still_pending:
+            if not _t.done():
+                logger.debug(f"Task {_t.get_name()} still not canceled.")
+            
+        logger.info(f"Closed connection {self.device} <-> {self.host}:{self.port}.")
+        logger.debug(f"Connection for {self.device} returns {errorno}.")
+        return errorno
 
-    
     
 class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
     """ Monitor to forward Serial to TCP connections
@@ -427,20 +400,19 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         device : str
             string with device filename
 
-        change : int
-            change type (added (1) / deleted (3)
+        flags : int
+            bit banged integer with aionotify.Flags
 
         Returns
         -------
-        None
+        0
 
         """
         logger.debug(f"device:{device} flags:{flags}")
         if flags == aionotify.Flags.CREATE and device not in self.active_connections:
             await asyncio.sleep(0.5) # give udev time to setup the device.
-            result = await self.handle_connection(device)
-            return result
-        return 0 # all well
+            self.tasks.append(asyncio.create_task(self.handle_connection(device)))
+        return 0
     
 
     async def handle_connection(self, device: str) -> int | bool:
@@ -510,12 +482,14 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
             if os.path.exists(device):
                 _t = asyncio.create_task(self.handle_connection(device))
                 self.tasks.append(_t)
-        self.tasks.append(asyncio.create_task(self.run(),name="main"))
+        self.tasks.append(asyncio.create_task(self.run(),name="watch_directory"))
         tasks = self.tasks
         while tasks:
             done, pending = await asyncio.wait(tasks,
                                                return_when=asyncio.FIRST_COMPLETED)
-            tasks = [_t for _t in pending]
+            for _t in done:
+                self.tasks.remove(_t)
+            tasks = self.tasks
 
             # if the done task is "main" then just end the
             # program. Server quitted. This will also happen if the
@@ -523,38 +497,28 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
             # COMMS_ERROR_TCP. In all other cases discard the done
             # task and continue awaiting the pending ones. Last one
             # standing is always main.
+
             mesg = ''
             for _t in done:
-                logger.error(f"Error occured in task {_t.get_name()} with result: {_t.result()}.")
-                if _t.get_name() == "main":
-                    errorno = _t.result()
-                    if errorno==COMMS_ERROR_SERIAL:
-                        mesg = "Serial communication error. Unspecified"
-                    elif errorno==COMMS_ERROR_SERIAL_INITIALISATION:
-                        mesg = "Could not initialise serial device."
-                    elif errorno==COMMS_ERROR_TCP_INITIALISATION:
+                errorno = _t.result()
+                if errorno:
+                    logger.debug(f"Error occured in task {_t.get_name()} with result: {_t.result()}.")
+                if errorno==COMMS_ERROR_TCP_INITIALISATION:
                         mesg = "Could not initialise connection to server."
-                    elif errorno==COMMS_ERROR_TCP:
-                        mesg = "Exiting due to lost connection to server."
-                elif _t.get_name() != "main" and _t.result() == COMMS_ERROR_TCP:
-                    # server must have disappeared when an established
-                    # connection already existed.
-                    errorno = _t.result()
+                elif errorno==COMMS_ERROR_TCP:
                     mesg = "Exiting due to lost connection to server."
-                elif _t.get_name() != "main" and _t.result() == COMMS_ERROR_TCP_INITIALISATION:
-                    # server was not available during initialisation.
-                    errorno = _t.result()
-                    mesg = "Failed to start, because the dockserver could not be connected to."
-                else:
-                    errorno=-1
-                    mesg = f"Unhandled error occurred: name {_t.get_name()} with result {_t.result()}"
-                    logger.debug(mesg)
-                    
-                if mesg:
-                    logger.error(mesg)
-                    with open("/dev/stderr", "w") as fp:
-                        fp.write(f"Fatal error: {mesg}\n")
-                    sys.exit(errorno)
+                elif _t.get_name() == "watch_directory":
+                    if errorno:
+                        mesg = f"Main task (watch_directory) ended with error {errorno}."
+                    else:
+                        mesg = f"Main task (watch_directory) ended normally."
+            if mesg:
+                break
+            
+        logger.error(mesg)
+        with open("/dev/stderr", "w") as fp:
+            fp.write(f"Fatal error: {mesg}\n")
+        sys.exit(errorno)
                 
 logger = logging.getLogger(__name__)
 

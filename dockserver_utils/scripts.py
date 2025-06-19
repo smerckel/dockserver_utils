@@ -39,7 +39,7 @@ def get_logger(name, level, system_level=logging.INFO):
     system_handler.setLevel(level)
 
     # Create formatters and add them to handlers
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    formatter = logging.Formatter('%(asctime)s - %(name)s:%(funcName)s:%(lineno)d - %(levelname)s - %(message)s')
     file_handler.setFormatter(formatter)
     system_handler.setFormatter(formatter)
 
