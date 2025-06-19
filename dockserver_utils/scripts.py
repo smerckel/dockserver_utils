@@ -2,6 +2,7 @@ import abc
 import argparse
 import asyncio
 import logging
+import logging.handlers
 import os
 import sys
 import toml
@@ -12,7 +13,7 @@ from . import fileDecompressor
 
 LOGDIR = "/var/local/log"
 
-def get_logger(name, level, system_level=logging.INFO):
+def get_logger(name, level, syslog_level=logging.INFO):
     try:
         os.makedirs(LOGDIR)
     except PermissionError:
@@ -31,6 +32,7 @@ def get_logger(name, level, system_level=logging.INFO):
         log_filename = os.path.join(LOGDIR, f"{name}.log")
     else:
         log_filename = f"{name}.log"
+
     # Create handlers
     file_handler = logging.FileHandler(log_filename)
     file_handler.setLevel(level)
@@ -38,22 +40,25 @@ def get_logger(name, level, system_level=logging.INFO):
     system_handler = logging.StreamHandler(sys.stdout)
     system_handler.setLevel(level)
 
-    # Create formatters and add them to handlers
-    formatter = logging.Formatter('%(asctime)s - %(name)s:%(funcName)s:%(lineno)d - %(levelname)s - %(message)s')
-    file_handler.setFormatter(formatter)
-    system_handler.setFormatter(formatter)
-
-    # Write to the system logs.
-    # Create a SysLogHandler
-    #syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
-    #syslog_handler.setLevel(system_level)
-    #syslog_handler.setFormatter(formatter)
+    syslog_handler = logging.handlers.SysLogHandler(address='/dev/log')
+    syslog_handler.setLevel(syslog_level)
     
+    # Create formatters 
+    formatter_filehandler = logging.Formatter('%(asctime)s %(levelname)6s - %(name)s:%(funcName)s():%(lineno)d - %(message)s')   
+    formatter_systemhandler = logging.Formatter('%(levelname)6s - %(name)s:%(funcName)s():%(lineno)d - %(message)s')
+    formatter_sysloghandler= logging.Formatter('%(levelname)s - %(message)s')
+
+    # Add formatters
+    file_handler.setFormatter(formatter_filehandler)
+    system_handler.setFormatter(formatter_systemhandler)
+    syslog_handler.setFormatter(formatter_sysloghandler)
+
     # Add handlers to the loggers
     for _l in loggers:
         _l.addHandler(file_handler)
         _l.addHandler(system_handler)
-        #_l.addHandler(syslog_handler)
+        _l.addHandler(syslog_handler)
+        
     if not log_dir_created:
         logger.debug(f"Could not create log file in {LOGDIR}. Using local directory instead.")
     return logger

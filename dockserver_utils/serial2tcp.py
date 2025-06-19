@@ -94,7 +94,7 @@ class Serial2TCP(object):
         else:
             self.tcp_reader = tcp_reader
             self.tcp_writer = tcp_writer
-            logger.info(f"TCP connection to {self.host}:{self.port} established.")
+            logger.info(f"TCP connection to {self.host}:{self.port} established for {self.device}.")
             return COMMS_NOERROR
         
     async def close_tcp_connection(self):

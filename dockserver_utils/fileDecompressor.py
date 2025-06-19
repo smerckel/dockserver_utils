@@ -28,21 +28,20 @@ class GliderFileRenamer(ABC):
     def rename(self, filename: str) -> str:
         pass
 
-    def parse_filename_line(self, s: str) -> str|None:
+    def parse_filename_line(self, s: str) -> str:
         try:
             k, v = s.split(":")
         except ValueError:
-            return None
+            return ""
         else:
             return v.strip()
             
     def retrieve_filename_mapping(self, filename: str, max_lines: int = 13) -> dict[str, str]:
         # this should work for dbd and mlg files and their friends.
         keys: list[str] = ["the8x3_filename", "full_filename"]
-        filenames: dict[str,str|None] = {}
+        filenames: dict[str,str] = {}
         with open(filename, 'rb') as fp:
             for i, line in enumerate(fp):
-                logger.debug(f"i: {i}, line: {line}")
                 if i > 13:
                     break
                 try:
@@ -53,12 +52,13 @@ class GliderFileRenamer(ABC):
                     for k in keys:
                         logger.debug(f"checking key {k}")
                         if ascii_line.startswith(k):
-                            s = self.parse_filename_line(ascii_line)
+                            s: str = self.parse_filename_line(ascii_line)
                             logger.debug(f"Found s={s}")
-                            filenames[k] = s
+                            if s:
+                                filenames[k] = s
                 if len(filenames)==2:
                     break
-        if len(filenames)==2 and not None in filenames.values():
+        if len(filenames)==2:
             return filenames
         else:
             return {}
@@ -107,7 +107,7 @@ class AsynchronousFileDecompressorBase(filewatcher.AsynchronousDirectoryMonitorB
         raise NotImplementedError
 
     
-    def is_to_be_processed(self, path: str) -> bool:
+    def is_to_be_processed(self, path: str, flags: int|None=None) -> bool:
         file_properties = self.get_file_properties(path)
         if file_properties is None:
             logger.debug(f"is_to_be_processed(): no fileproperties ({path})")
@@ -129,19 +129,25 @@ class AsynchronousFileDecompressorBase(filewatcher.AsynchronousDirectoryMonitorB
             return False
             
 
-    async def process_file(self, path: str) -> int:
+    async def process_file(self, path: str, flags: int|None=None) -> int:
         file_properties = self.get_file_properties(path)
+        if file_properties is None:
+            return 1
         decompressed_filename = self.file_decompressor.decompress(path)
         if decompressed_filename and file_properties.extension not in [".ccc", ".CCC"]:
             # decompression was successful, and of dbd or mlg type. Now rename the file.
             renamed_file = self.file_renamer.rename(decompressed_filename)
             file_properties_renamed = self.get_file_properties(renamed_file)
+            if file_properties_renamed is None:
+                return 2
             logger.info(f"Decompressed and renamed {file_properties.full_base_filename} to {file_properties_renamed.full_base_filename}")
         elif decompressed_filename:
             # successfully decompressed a cache file.
             file_properties_decompressed = self.get_file_properties(decompressed_filename)
+            if file_properties_decompressed is None:
+                return 3
             logger.info(f"Decompressed and renamed {file_properties.full_base_filename} to {file_properties_decompressed.full_base_filename}")
-
+        return 0
 
             
 class AsynchronousFileDecompressorWatchfiles(AsynchronousFileDecompressorBase):
@@ -176,7 +182,7 @@ class AsynchronousFileDecompressorAionotify(AsynchronousFileDecompressorBase):
                                       
     def __init__(self, top_directory: str, file_renamer: GliderFileRenamer=DBDMLGFileRenamer()):
         super().__init__(top_directory, file_renamer)
-        self.watcher: None|aionotify.Watcher=None
+        self.watcher: aionotify.Watcher=None
         self.handled_files: list[str] = []
 
         
@@ -204,7 +210,7 @@ class AsynchronousFileDecompressorAionotify(AsynchronousFileDecompressorBase):
         self.watcher.watch(alias='root', path=self.top_directory, flags=aionotify.Flags.CREATE | aionotify.Flags.ISDIR)
         await self.watcher.setup()
 
-    async def add_new_glider(self, glider:str, path:str):
+    async def add_new_glider(self, glider:str, path:str) -> bool:
         # give the dockserver some time to create all directories and files for this glider
         await asyncio.sleep(0.5)
         # check if we have a from-glider directory
@@ -228,7 +234,7 @@ class AsynchronousFileDecompressorAionotify(AsynchronousFileDecompressorBase):
                 received_error = await self.process_file(path)
                 logger.debug(f"process_file({path}) returned {received_error}.")
                 if received_error:
-                    s = f"Processing file {path} for change {change} returned an error ({received_error})."
+                    s = f"Processing file {path} for event flags {event.flags} returned an error ({received_error})."
                     logger.info(s)
                     break
             elif event.alias=='root' and event.flags==aionotify.Flags.CREATE | aionotify.Flags.ISDIR:
