@@ -68,6 +68,27 @@ class Config(abc.ABC):
     @abc.abstractmethod
     def set_defaults(self):
         pass
+
+    @classmethod
+    def csl2list(cls, s: str) -> list[str]:
+        return s.split(",")
+
+    @classmethod
+    def csl2dict(cls, s: str) -> dict[str,str]:
+        d = {}
+        for _s in s.split(','):
+            k, v = _s.split('=')
+            d[k]=v
+        return d
+
+    @classmethod
+    def dict2csl(cls, d: dict[str,str]) -> str:
+        s = ",".join([f"{k}={v}" for k, v in d.items()])
+        return s
+
+    @classmethod
+    def list2csl(cls, l: list[str]) -> str:
+        return ",".join(l)
     
     def readToml(self, filename: str) -> {}:
         if not os.path.exists(filename):
@@ -92,9 +113,11 @@ class serialTCPConnectorConfig(Config):
     def set_defaults(self):
         default_config = dict(TCP=dict(server="localhost",
                                        port=8181),
-                              Serial=dict(devices=['/dev/ttyUSB0',
+                              Serial=dict(devices=['/dev/ttyS0',
+                                                   '/dev/ttyUSB0',
                                                    '/dev/ttyUSB1',
-                                                   '/dev/ttyUSB2']
+                                                   '/dev/ttyUSB2'],
+                                          options={'/dev/ttyS0':'direct'}
                                           )
                               )
         for k,v in default_config.items():
@@ -109,16 +132,19 @@ def serialTCPConnector():
         description='A serial to tcp data forwarder to use with Teledyne\'s dockserver software',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    
+
     s = 'List (comma-separated, no spaces) of serial devices to forward. Example --devices=/dev/ttyUSB0,/dev/ttyUSB1'
     parser.add_argument('-d', '--devices', help=s,
-                        type=str, default=",".join(config.config['Serial']['devices']))
+                        type=str, default=config.list2csl(config.config['Serial']['devices']))
     parser.add_argument('-s', '--server', help='Host name of dockserver',
                         type=str, default=config.config['TCP']['server'])
     parser.add_argument('-p', '--port', help='Dockserver TCP port for incoming network connections',
                         type=int, default=config.config['TCP']['port'])
     parser.add_argument('-f', '--configuration_file', help='Reads configuration file.')
 
+    parser.add_argument('-o', '--serial-options', help='Options to specific serial connections',
+                        type=str,
+                        default=config.dict2csl(config.config['Serial']['options']))
     args = parser.parse_args()
 
     # Read Configuration files, first, globally, then locally
@@ -126,7 +152,7 @@ def serialTCPConnector():
     os.makedirs(os.path.join(os.environ['HOME'], local_config_path), exist_ok=True)
                 
     config.readToml('/etc/dockserver_utils/serialTCPConnector-config.toml')
-    local_config_filename = os.path.join(os.environ['HOME'], local_config_path, 'Connector-config.toml')
+    local_config_filename = os.path.join(os.environ['HOME'], local_config_path, 'serialTCPConnector-config.toml')
     if not config.readToml(local_config_filename):
         comments="""# Local configuration for serialTCPConnector.
 # Modify as per your needs.
@@ -152,6 +178,7 @@ def serialTCPConnector():
     logger.info("Waiting for connections...")
     serial_device_forwarder = serial2tcp.SerialDeviceForwarder(top_directory='/dev/',
                                                                devices = args.devices.split(","),
+                                                               serial_options = config.csl2dict(args.serial_options),
                                                                host = args.server,
                                                                port = args.port)
     asyncio.run(serial_device_forwarder.start())

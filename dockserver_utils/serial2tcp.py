@@ -33,15 +33,22 @@ class Serial2TCP(object):
 
     Parameters
     ----------
-    device : string
+    device : str
         path of serial device
+    serial_option : str
+        option applied to serial device
     host : string
         hostname of TCP server
     port : int
         TCP port number of server
     """
-    def __init__(self, device: str, host: str, port: int):
+    def __init__(self,
+                 device: str,
+                 serial_option:str,
+                 host: str,
+                 port: int):
         self.device: str = device
+        self.serial_option: str = serial_option
         self.host: str = host
         self.port: int = port
         
@@ -50,7 +57,10 @@ class Serial2TCP(object):
         self.tcp_reader: asyncio.StreamReader | None = None
         self.tcp_writer: asyncio.StreamWriter | None = None
 
-        self.carrier_detect_status: int = CARRIER_DETECT_UNDEFINED
+        if serial_option == 'direct':
+            self.carrier_detect_status: int = CARRIER_DETECT_YES
+        else:
+            self.carrier_detect_status: int = CARRIER_DETECT_UNDEFINED
         
     async def initialise_serial_connection(self):
         """ Establishes connection to serial device and TCP server.
@@ -70,7 +80,7 @@ class Serial2TCP(object):
         self.ser_writer = ser_writer
 
     async def initialise_tcp_connection(self) -> int:
-        """ Establishes connection to serial device and TCP server.
+        """ Establishes connection to TCP server.
 
         Asyncio coroutine.
 
@@ -88,13 +98,32 @@ class Serial2TCP(object):
             return COMMS_NOERROR
         
     async def close_tcp_connection(self):
+        """ Closes connection to TCP server.
+
+        Asyncio coroutine.
+
+        """
         self.tcp_writer.close()
         await self.tcp_writer.wait_closed()
         logger.debug("Closed TCP connection.")
         # Do NOT forget!
         self.tcp_reader = None
         self.tcp_writer = None
-         
+
+    async def check_if_server_is_up(self) -> int:
+        """ Checks briefly if server is contactable.
+
+        Returns
+        -------
+        int
+            Errorno of connection attempt {COMMS_NOERROR, COMMS_ERROR_TCP_INITIALISATION}
+        """
+        result = await self.initialise_tcp_connection()
+        if result:
+            await asyncio.sleep(0.5)
+            await self.close_tcp_connection()
+        return result
+    
     @property
     def has_tcp_backend(self):
         return not (self.tcp_writer is None)
@@ -120,6 +149,7 @@ class Serial2TCP(object):
         
         """
         result = COMMS_NOERROR
+        data = None
         while True:
             if not self.has_tcp_backend and self.carrier_detect_status==CARRIER_DETECT_YES:
                 result = await self.ser_data_filter()
@@ -147,9 +177,18 @@ class Serial2TCP(object):
 
     async def monitor_carrier_detect(self) -> int:
         result = COMMS_NOERROR
+        if self.serial_option == 'direct':
+            # we should not monitor for any changes in CD.
+            while True:
+                await asyncio.sleep(86400)
+    
         while True:
             if not self.ser_writer is None:
-                carrier_detect = self.ser_writer._transport.serial.cd
+                try:
+                    carrier_detect = self.ser_writer._transport.serial.cd
+                except OSError:
+                    result = COMMS_ERROR_SERIAL
+                    break
                 if carrier_detect:
                     _status = CARRIER_DETECT_YES
                 else:
@@ -230,6 +269,13 @@ class Serial2TCP(object):
         """
         logger.debug(f"Starting connection {self.device} <-> {self.host}:{self.port}.")
 
+        errorno = await self.check_if_server_is_up()
+        if errorno: # we could not connect. Give up.
+            logger.debug("Server can NOT be contacted.")
+            return errorno
+        else:
+            logger.debug("Server can be contacted.")
+            
         try:
             await self.initialise_serial_connection()
         except serial_asyncio.serial.serialutil.SerialException as e:
@@ -252,6 +298,7 @@ class Serial2TCP(object):
         for _t in done:
             name = _t.get_name()
             result = _t.result()
+            logger.debug(f"Examining done task: name {name}, result: {result}")
             if name == 'ser_to_tcp': # serial connection gave up
                 self.ser_writer.close()
                 try:
@@ -261,14 +308,25 @@ class Serial2TCP(object):
                 logger.debug("Serial writer closed.")
                 if not tasks['tcp_to_ser'].cancelled():
                     tasks['tcp_to_ser'].cancel()
-                    await asyncio.sleep(0.3)
+
             elif name == 'tcp_to_ser': # tcp connection gave up
                 self.tcp_writer.close()
                 await self.tcp_writer.wait_closed()
                 logger.debug("TCP writer closed.")
                 if not tasks['ser_to_tcp'].cancelled():
                     tasks['ser_to_tcp'].cancel()
-                    await asyncio.sleep(0.3)
+            elif name == 'CD_monitor': # checking for a carrier detect retured an error
+                self.ser_writer.close()
+                try:
+                    await self.ser_writer.wait_closed()
+                except serial_asyncio.serial.SerialException:
+                    pass
+                logger.debug("Serial writer closed.")
+                if not tasks['tcp_to_ser'].cancelled():
+                    tasks['tcp_to_ser'].cancel()
+                
+        # wait a bit for the cancelings to take effect
+        await asyncio.sleep(1)
         status = [i.cancelled() for i in pending]
         assert all(status)
         logger.debug(f"All pending tasks are cancelled: {all(status)}")
@@ -319,14 +377,21 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
 
     devices : list[str]
         list of device names that are to be redirectored.
-
+    serial_options : dict (default={})
+        dictionary of options applied to devices
     port : int
         tcp port number to redirect any serial connections to.
     """
 
-    def __init__(self, top_directory: str, devices: list = [str], host: str = "localhost", port: int = 8181):
+    def __init__(self,
+                 top_directory: str,
+                 devices: list[str],
+                 serial_options: dict[str,str]={}, 
+                 host: str = "localhost",
+                 port: int = 8181):
         super().__init__(top_directory)
         self.devices: list[str] = devices
+        self.serial_options: dict[str,str] = serial_options
         self.host: str = host
         self.port: int = port
         self.watcher: None|aionotify.Watcher=None
@@ -393,7 +458,11 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         """
         self.active_connections.append(device)
         # Use a asynchronous serial connection
-        serial2tcp = Serial2TCP(device, self.host, self.port)
+        try:
+            serial_option = self.serial_options[device]
+        except KeyError:
+            serial_option = ""
+        serial2tcp = Serial2TCP(device, serial_option, self.host, self.port)
         result = await serial2tcp.run()
         logger.debug("Serial instance cleaned up.")
         logger.debug(f"Result : {result}.")
