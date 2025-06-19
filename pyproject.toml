@@ -22,7 +22,7 @@ classifiers = [
 ]
 
 [project.scripts]
-serialTCPconnector = "dockserver_utils.scripts:serialTCPConnector"
+serialTCPFwd = "dockserver_utils.scripts:serialTCPFwd"
 fileDecompressorHelper = "dockserver_utils.scripts:fileDecompressorHelper"
 
 [build-system]

@@ -129,8 +129,8 @@ class serialTCPConnectorConfig(Config):
             self.config[k] = v
                               
                                                    
-def serialTCPConnector():
-    logger = get_logger('fileDecompressorHelper', logging.DEBUG, logging.INFO)
+def serialTCPFwd():
+    logger = get_logger('serialTCPConnector', logging.DEBUG, logging.INFO)
 
     config = serialTCPConnectorConfig()
     parser = argparse.ArgumentParser(
