@@ -9,7 +9,11 @@ license = { text = "GPLv03" }
 dependencies = ["asyncio",
                 "pyserial",  
 	     	"pyserial-asyncio",
-		"watchfiles"]
+		"watchfiles",
+		"toml",
+		"dbdreader>0.5.4",
+		"aionotify",
+		"pytest-asyncio"]
 requires-python = ">=3.10"
 readme = "README.md"
 classifiers = [
