@@ -1,0 +1,8 @@
+# Default configuration file for serialTCPConnector
+
+[TCP]
+server = "localhost"
+port = 8181
+
+[Serial]
+devices = [ "/dev/ttyUSB0"]
