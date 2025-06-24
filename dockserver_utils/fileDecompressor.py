@@ -21,6 +21,9 @@ FileProperties = namedtuple("FileProperties",
                              "base_filename",
                              "extension",
                              "directory"])
+ERROR_OK = 0
+ERROR_FILE_NOT_FOUND = 1
+ERROR_NO_FILE_HEADER = 2
 
 class GliderFileRenamer(ABC):
 
@@ -67,6 +70,8 @@ class DBDMLGFileRenamer(GliderFileRenamer):
 
     def rename(self, filename: str) -> str:
         filename_mapping = self.retrieve_filename_mapping(filename)
+        if not filename_mapping: # We have not enough header info. Perhaps empty file?
+            return ""
         if filename_mapping['the8x3_filename'] in filename:
             new_filename = filename.replace(filename_mapping['the8x3_filename'],
                                             filename_mapping['full_filename'])
@@ -132,49 +137,49 @@ class AsynchronousFileDecompressorBase(filewatcher.AsynchronousDirectoryMonitorB
     async def process_file(self, path: str, flags: int|None=None) -> int:
         file_properties = self.get_file_properties(path)
         if file_properties is None:
-            return 1
+            return ERROR_FILE_NOT_FOUND
         decompressed_filename = self.file_decompressor.decompress(path)
         if decompressed_filename and file_properties.extension not in [".ccc", ".CCC"]:
             # decompression was successful, and of dbd or mlg type. Now rename the file.
             renamed_file = self.file_renamer.rename(decompressed_filename)
             file_properties_renamed = self.get_file_properties(renamed_file)
             if file_properties_renamed is None:
-                return 2
+                return ERROR_NO_FILE_HEADER
             logger.info(f"Decompressed and renamed {file_properties.full_base_filename} to {file_properties_renamed.full_base_filename}")
         elif decompressed_filename:
             # successfully decompressed a cache file.
             file_properties_decompressed = self.get_file_properties(decompressed_filename)
             if file_properties_decompressed is None:
-                return 3
+                return ERROR_FILE_NOT_FOUND
             logger.info(f"Decompressed and renamed {file_properties.full_base_filename} to {file_properties_decompressed.full_base_filename}")
-        return 0
+        return ERROR_OK
 
             
-class AsynchronousFileDecompressorWatchfiles(AsynchronousFileDecompressorBase):
+# class AsynchronousFileDecompressorWatchfiles(AsynchronousFileDecompressorBase):
                                       
-    def __init__(self, top_directory: str, file_renamer: GliderFileRenamer=DBDMLGFileRenamer()):
-        super().__init__(top_directory, file_renamer)
+#     def __init__(self, top_directory: str, file_renamer: GliderFileRenamer=DBDMLGFileRenamer()):
+#         super().__init__(top_directory, file_renamer)
         
-    def is_copied(self, path: str, change: int) -> bool:
-        return change == Change.added # Note this does not work for slow copying.
+#     def is_copied(self, path: str, change: int) -> bool:
+#         return change == Change.added # Note this does not work for slow copying.
 
-    ### This method does not do what we want, because watchfiles
-    ### cannot detect when a file is being closed. For now rely on aionotify instead.
-    async def watch_directory(self) -> None:
-        logger.info(f"Started monitoring filesystem under {self.top_directory}.")
-        received_error = 0
-        async for changes in awatch(self.top_directory):
-            for change, path in changes:
-                if self.is_copied(path, change) and self.is_to_be_processed(path):
-                    received_error = await self.process_file(path)
-                    logger.debug(f"process_file({path},{change}) returned {received_error}.")
-                    if received_error:
-                        s = f"Processing file {path} for change {change} returned an error ({received_error})."
-                        logger.info(s)
-                        break
-            if received_error:
-                break
-        logger.info(f"Stopped monitoring filesystem under {self.top_directory}.")
+#     ### This method does not do what we want, because watchfiles
+#     ### cannot detect when a file is being closed. For now rely on aionotify instead.
+#     async def watch_directory(self) -> None:
+#         logger.info(f"Started monitoring filesystem under {self.top_directory}.")
+#         errorno = ERROR_OK
+#         async for changes in awatch(self.top_directory):
+#             for change, path in changes:
+#                 if self.is_copied(path, change) and self.is_to_be_processed(path):
+#                     errorno = await self.process_file(path)
+#                     logger.debug(f"process_file({path},{change}) returned {errorno}.")
+#                     if errorno:
+#                         s = f"Processing file {path} for change {change} returned an error ({errorno})."
+#                         logger.info(s)
+#             # Is there any error that we want to stop monitoring?
+#             #if errorno==??:
+#             #    break
+#         logger.info(f"Stopped monitoring filesystem under {self.top_directory}.")
 
 
         
@@ -231,12 +236,10 @@ class AsynchronousFileDecompressorAionotify(AsynchronousFileDecompressorBase):
             logger.debug(event)
             if self.is_copied(path, event.flags) and self.is_to_be_processed(path):
                 logger.debug(f"{path} is to be processed.")
-                received_error = await self.process_file(path)
-                logger.debug(f"process_file({path}) returned {received_error}.")
-                if received_error:
-                    s = f"Processing file {path} for event flags {event.flags} returned an error ({received_error})."
+                errorno = await self.process_file(path)
+                if errorno:
+                    s = f"Processing file {path} for event flags {event.flags} returned an error ({errorno})."
                     logger.info(s)
-                    break
             elif event.alias=='root' and event.flags==aionotify.Flags.CREATE | aionotify.Flags.ISDIR:
                 result = await self.add_new_glider(event.name, path)
                 if result:

@@ -76,7 +76,19 @@ class Serial2TCP(object):
                                                         parity='N',
                                                         stopbits=1,
                                                         timeout=0,
-                                                        reset_input_buffer=True)
+                                                        # this may
+                                                        # solve an
+                                                        # issue that
+                                                        # is caused by
+                                                        # something
+                                                        # else and now
+                                                        # solved
+                                                        # anyway. No
+                                                        # need for
+                                                        # custom
+                                                        # library.
+                                                        #reset_input_buffer=True
+                                                        )
         self.ser_reader = ser_reader
         self.ser_writer = ser_writer
 
@@ -270,7 +282,14 @@ class Serial2TCP(object):
             logger.debug(f"tcp_read_to_ser_write(): cleaning up writers...")
             if self.ser_writer is not None:
                 self.ser_writer.close()
-                await self.ser_writer.wait_closed()
+                try:
+                    await self.ser_writer.wait_closed()
+                except Exception as e:
+                    try:
+                        error_mesg = e.args[0]
+                    except:
+                        error_mesg = "Could not get the error message."
+                    logger.debug(f"Exception occured with {error_mesg}, but is ignored.")
         logger.debug(f"Exiting with {errorno} (device={self.device}).")
         return errorno
 
@@ -398,7 +417,6 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         bool
             True if processing is required.
         """
-        logger.debug(f"is_to_be_processed(): path: {path} flags:{flags} test: {flags == aionotify.Flags.CREATE}")
         if flags == aionotify.Flags.CREATE:
             return path in self.devices
         return False
