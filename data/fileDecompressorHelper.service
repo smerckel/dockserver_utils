@@ -1,0 +1,14 @@
+[Unit]
+Description=fileDecompressorHelper Service
+After=dockserver.service
+
+[Service]
+Type=simple
+User=gliderman
+WorkingDirectory=/home/gliderman/logs
+ExecStart=/usr/local/bin/fileDecompressorHelper
+ExecStop=/bin/kill $MAINPID
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
