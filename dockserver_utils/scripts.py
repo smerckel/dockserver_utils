@@ -110,7 +110,7 @@ class Config(abc.ABC):
                 fp.write(comments)
             toml.dump(self.config, fp)
 
-class serialTCPConnectorConfig(Config):
+class serialTCPFwdConfig(Config):
 
     def __init__(self):
         super().__init__()
@@ -130,9 +130,9 @@ class serialTCPConnectorConfig(Config):
                               
                                                    
 def serialTCPFwd():
-    logger = get_logger('serialTCPConnector', logging.DEBUG, logging.INFO)
+    logger = get_logger('serialTCPFwd', logging.DEBUG, logging.INFO)
 
-    config = serialTCPConnectorConfig()
+    config = serialTCPFwdConfig()
     parser = argparse.ArgumentParser(
         description='A serial to tcp data forwarder to use with Teledyne\'s dockserver software',
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -156,10 +156,10 @@ def serialTCPFwd():
     local_config_path = '.config/dockserver_utils'
     os.makedirs(os.path.join(os.environ['HOME'], local_config_path), exist_ok=True)
                 
-    config.readToml('/etc/dockserver_utils/serialTCPConnector-config.toml')
-    local_config_filename = os.path.join(os.environ['HOME'], local_config_path, 'serialTCPConnector-config.toml')
+    config.readToml('/etc/dockserver_utils/serialTCPFwd-config.toml')
+    local_config_filename = os.path.join(os.environ['HOME'], local_config_path, 'serialTCPFwd-config.toml')
     if not config.readToml(local_config_filename):
-        comments="""# Local configuration for serialTCPConnector.
+        comments="""# Local configuration for serialTCPFwd.
 # Modify as per your needs.
 
 """
