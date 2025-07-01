@@ -116,9 +116,10 @@ class Serial2TCP(object):
         Asyncio coroutine.
 
         """
-        self.tcp_writer.close()
-        await self.tcp_writer.wait_closed()
-        logger.info(f"Closed TCP connection ({self.device}).")
+        if self.tcp_writer is not None:
+            self.tcp_writer.close()
+            await self.tcp_writer.wait_closed()
+            logger.info(f"Closed TCP connection ({self.device}).")
         # Do NOT forget!
         self.tcp_reader = None
         self.tcp_writer = None
@@ -349,21 +350,21 @@ class Serial2TCP(object):
         for _t in pending:
             logger.debug(f"Pending task: {_t.get_name()} (device: {self.device}).")
 
-            
-        # pending tasks will be taken down automatically because of errors that will occur in them too.
-        await asyncio.wait(pending, timeout=1)
-        still_pending = []
-        for _t in pending:
-            if _t.done():
-                continue
-            logger.debug(f"Task {_t.get_name()} got not canceled. Try again.")
-            _t.cancel()
-            still_pending.append(_t)
-        if still_pending:
-            await asyncio.wait(still_pending, timeout=15)
-        for _t in still_pending:
-            if not _t.done():
-                logger.debug(f"Task {_t.get_name()} still not canceled.")
+        if pending:
+            # pending tasks will be taken down automatically because of errors that will occur in them too.
+            await asyncio.wait(pending, timeout=1)
+            still_pending = []
+            for _t in pending:
+                if _t.done():
+                    continue
+                logger.debug(f"Task {_t.get_name()} got not canceled. Try again.")
+                _t.cancel()
+                still_pending.append(_t)
+            if still_pending:
+                await asyncio.wait(still_pending, timeout=15)
+            for _t in still_pending:
+                if not _t.done():
+                    logger.debug(f"Task {_t.get_name()} still not canceled.")
             
         logger.info(f"Closed connection {self.device} <-> {self.host}:{self.port}.")
         logger.debug(f"Connection for {self.device} returns {errorno}.")
