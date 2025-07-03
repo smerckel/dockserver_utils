@@ -245,6 +245,9 @@ class Serial2TCP(object):
                 if self.tcp_reader is not None:
                     try:
                         data = await self.tcp_reader.read(READBUFFER)
+                    except TimeoutError:
+                        logger.debug("Encountered a timeout error. Trying to recover...")
+                        continue
                     except Exception as e:
                         logger.debug(f"IDENTIFY ERROR: {type(e)}")
                         errorno=COMMS_ERROR_TCP
