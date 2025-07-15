@@ -6,19 +6,19 @@ import os
 import sys
 import typing
 
-import serial_asyncio
+import serial_asyncio # type: ignore
 serial_asyncio.serial.serialutil.SerialException
 
-import aionotify
+import aionotify # type: ignore
 
 from . import filewatcher
 
 COMMS_NOERROR = 0
-COMMS_ERROR_SERIAL = 1
-COMMS_ERROR_TCP = 2
-COMMS_ERROR_SERIAL_INITIALISATION = 3
-COMMS_ERROR_TCP_INITIALISATION = 4
-
+COMMS_ERROR_SERIAL = 1 << 0
+COMMS_ERROR_TCP = 1 << 1
+COMMS_ERROR_SERIAL_INITIALISATION = 1 << 2
+COMMS_ERROR_TCP_INITIALISATION = 1 << 3
+COMMS_ERROR_TCP_TIMEOUT = 1 << 4
 
 # Buffer size of StreamReaders.
 READBUFFER = 256
@@ -247,10 +247,11 @@ class Serial2TCP(object):
                         data = await self.tcp_reader.read(READBUFFER)
                     except TimeoutError:
                         logger.debug("Encountered a timeout error. Trying to recover...")
-                        continue
+                        errorno = COMMS_ERROR_TCP_TIMEOUT
+                        break
                     except Exception as e:
                         logger.debug(f"IDENTIFY ERROR: {type(e)}")
-                        errorno=COMMS_ERROR_TCP
+                        errorno = COMMS_ERROR_TCP
                         break
                     if data:
                         if self.ser_writer is not None:
@@ -448,7 +449,7 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         return 0
     
 
-    async def handle_connection(self, device: str) -> int | bool:
+    async def handle_connection(self, device: str) -> tuple[int, str]:
         """ Handles a single serial <-> tcp connection
 
         Parameters
@@ -472,7 +473,7 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         logger.debug("Serial instance cleaned up.")
         logger.debug(f"Result : {result}.")
         self.active_connections.remove(device)
-        return result
+        return result, device
 
 
     async def setup_watcher(self):
@@ -533,9 +534,10 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
 
             mesg = ''
             for _t in done:
-                errorno = _t.result()
+                errorno, device = _t.result()
                 if errorno:
                     logger.debug(f"Error occured in task {_t.get_name()} with result: {_t.result()}.")
+                    logger.debug(f"Errorno {errorno}, involving device {device}.")
                 if errorno==COMMS_ERROR_TCP_INITIALISATION:
                         mesg = "Could not initialise connection to server."
                 elif errorno==COMMS_ERROR_TCP:
@@ -545,6 +547,13 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
                         mesg = f"Main task (watch_directory) ended with error {errorno}."
                     else:
                         mesg = f"Main task (watch_directory) ended normally."
+                elif errorno==COMMS_ERROR_TCP_TIMEOUT:
+                    logger.debug(f"Errorno {errorno}: TCP TimeoutError. Trying to restart.")
+                    logger.debug(f"Current tasks: {[_t.get_name() for _t in tasks]}.")
+                    _t = asyncio.create_task(self.handle_connection(device))
+                    self.tasks.append(_t)
+                    tasks = self.tasks
+                    logger.info(f"Restarted connection handler for {device}.")
             if mesg:
                 break
             
