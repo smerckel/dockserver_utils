@@ -20,8 +20,8 @@ devices = ['/dev/ttyUSB0',
            '/dev/ttyUSB1',
            '/dev/ttyS0']
 devices.remove('/dev/ttyS0')
-serial_options = {'/dev/ttyS0':'direct'}
-server = 'localhost'
+serial_options = {'/dev/ttyUSB0':'direct,simulateCD'}
+server = '10.200.66.34'
 port = 8181
 
 logger.info("Waiting for connections...")

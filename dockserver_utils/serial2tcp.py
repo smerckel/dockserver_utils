@@ -27,7 +27,17 @@ CARRIER_DETECT_UNDEFINED = 0
 CARRIER_DETECT_YES = 1
 CARRIER_DETECT_NO = 2        
         
-    
+
+class BufferHandler(object):
+
+    def __init__(self):
+        self.queue = asyncio.Queue()
+
+    async def send(self, data):
+        await self.queue.put(data)
+        
+
+
 class Serial2TCP(object):
     """ Class for bidirection relaying of binary data between a serial port and a TCP port
 
@@ -35,7 +45,7 @@ class Serial2TCP(object):
     ----------
     device : str
         path of serial device
-    serial_option : str
+    serial_options : str
         option applied to serial device
     host : string
         hostname of TCP server
@@ -44,11 +54,11 @@ class Serial2TCP(object):
     """
     def __init__(self,
                  device: str,
-                 serial_option:str,
+                 serial_options:str,
                  host: str,
                  port: int):
         self.device: str = device
-        self.serial_option: str = serial_option
+        self.serial_options: str = serial_options.split(',')
         self.host: str = host
         self.port: int = port
         
@@ -58,11 +68,15 @@ class Serial2TCP(object):
         self.tcp_writer: asyncio.StreamWriter | None = None
         
         self.carrier_detect_status: int
-        if serial_option == 'direct':
+        if 'direct' in self.serial_options:
             self.carrier_detect_status = CARRIER_DETECT_YES
         else:
             self.carrier_detect_status = CARRIER_DETECT_UNDEFINED
-        
+        if 'simulateCD' in self.serial_options:
+            self.buffer_handler = BufferHandler()
+        else:
+            self.buffer_handler = None
+            
     async def initialise_serial_connection(self):
         """ Establishes connection to serial device and TCP server.
 
@@ -133,7 +147,8 @@ class Serial2TCP(object):
             Errorno of connection attempt {COMMS_NOERROR, COMMS_ERROR_TCP_INITIALISATION}
         """
         result = await self.initialise_tcp_connection()
-        if result:
+        logger.debug(f"result: {result}")
+        if result == COMMS_NOERROR:
             await asyncio.sleep(0.5)
             await self.close_tcp_connection()
         return result
@@ -172,11 +187,15 @@ class Serial2TCP(object):
                     errorno = COMMS_ERROR_SERIAL
                     break
                 if not data:
+                    logger.debug("break because no data...")
                     break
                 errorno = await self.ser_data_filter()
                 if errorno != COMMS_NOERROR:
                     break
-                # Send the message only if there is a tcp backend
+                # Send data message to a buffer handler
+                if not self.buffer_handler is None:
+                    await self.buffer_handler.send(data)
+                # Send the message to tcp server only if there is a tcp backend
                 if self.tcp_writer is not None:
                     self.tcp_writer.write(data)
                     try:
@@ -199,6 +218,9 @@ class Serial2TCP(object):
         try:
             while True:
                 try:
+
+                    TODO: if simulateCD in options than set carrier_detect based on the input from the buffer_handler.
+                    
                     if self.ser_writer is not None:
                         carrier_detect = self.ser_writer._transport.serial.cd
                     else:
@@ -231,6 +253,7 @@ class Serial2TCP(object):
                 pass # ignore any errors at this stage.
         logger.debug(f"Exiting with {errorno} (device={self.device}).")
         return errorno
+
     
     async def tcp_read_to_ser_write(self) -> int:
         """ Mono-directional communication : reading from TCP; writing to serial
@@ -336,7 +359,17 @@ class Serial2TCP(object):
         logger.info(f"Serial device {self.device} connected.")
 
         tasks: dict[str, asyncio.Task] = {}
-        if not self.serial_option == 'direct':
+        # Depending on the serial options we have to do the following to make tcp connections:
+        #
+        # direct | simulateCD | action
+        #  -     |    -       | run CD_monitor
+        #  +     |    -       | just open tcp connection
+        #  -     |    +       | run simulate_CD to handle connections
+        #  +     |    +       | run simulate_CD to handle connections
+
+        if "direct" in self.serial_options:
+            await self.initialise_tcp_connection() # we just checked this to work millisecs before...
+        else:
             tasks["CD_monitor"] = asyncio.create_task(self.monitor_carrier_detect(), name="CD_monitor")
         tasks["ser_to_tcp"] = asyncio.create_task(self.ser_read_to_tcp_write(), name="ser_to_tcp")
         tasks["tcp_to_ser"] = asyncio.create_task(self.tcp_read_to_ser_write(), name="tcp_to_ser")
@@ -465,10 +498,10 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         self.active_connections.append(device)
         # Use a asynchronous serial connection
         try:
-            serial_option = self.serial_options[device]
+            serial_options = self.serial_options[device]
         except KeyError:
-            serial_option = ""
-        serial2tcp = Serial2TCP(device, serial_option, self.host, self.port)
+            serial_options = ""
+        serial2tcp = Serial2TCP(device, serial_options, self.host, self.port)
         result = await serial2tcp.run()
         logger.debug("Serial instance cleaned up.")
         logger.debug(f"Result : {result}.")
