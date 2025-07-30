@@ -1,250 +1,20 @@
-from abc import ABC, abstractmethod
 import asyncio
 import argparse
-from collections import defaultdict
 import logging
 import os
-import re
 import sys
-import typing
 
 import serial_asyncio # type: ignore
 serial_asyncio.serial.serialutil.SerialException
 
 import aionotify # type: ignore
-import arrow
+
 
 from . import filewatcher
-
-COMMS_NOERROR = 0
-COMMS_ERROR_SERIAL = 1 << 0
-COMMS_ERROR_TCP = 1 << 1
-COMMS_ERROR_SERIAL_INITIALISATION = 1 << 2
-COMMS_ERROR_TCP_INITIALISATION = 1 << 3
-COMMS_ERROR_TCP_TIMEOUT = 1 << 4
-
-# Buffer size of StreamReaders.
-READBUFFER = 256
-
-CARRIER_DETECT_UNDEFINED = 0
-CARRIER_DETECT_YES = 1
-CARRIER_DETECT_NO = 2        
-        
+from . import bufferhandler
+from .constants import *
 
         
-class Timer(object):
-
-    def __init__(self, timeout: float = 60.):
-        self.timeout = timeout
-        self._elapsed = 0.
-        self._dt = 1
-        self._task = asyncio.create_task(self.run())
-        logger.debug("Timer started...")
-        
-    def reset(self) -> None:
-        self._elapsed = 0.
-
-    async def run(self) -> None:
-        while True:
-            await asyncio.sleep(self._dt)
-            self._elapsed += self._dt
-
-    async def close(self) -> None:
-        # Cancel the task and wait for it to finish
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-        logger.debug("Timer closed.")
-
-    def is_timed_out(self) -> bool:
-        logger.debug(f"Is timed out? {self._elapsed > self.timeout}")
-        return self._elapsed > self.timeout
-    
-
-class BaseParser(ABC):
-
-    def __init__(self):
-        self.name = self.__class__.__name__
-    
-    @abstractmethod
-    def parse(self, s) -> [str, typing.Any]:
-        pass
-
-    
-class VehicleNameParser(BaseParser):
-    def __init__(self):
-        super().__init__()
-        # Vehicle Name: sebastian
-        self.regex = re.compile(r"Vehicle Name: (\w+)")
-        
-    def parse(self, s):
-        result = self.regex.match(s)
-        if result:
-            return self.name, result.group(1)
-        else:
-            return self.name, None
-
-
-class GliderLABDOSParser(BaseParser):
-    def __init__(self):
-        super().__init__()
-        self.regex = re.compile(r"Glider(LAB|DOS)")
-        
-    def parse(self, s) -> [str, typing.Any]:
-        result = self.regex.match(s)
-        if result:
-            return self.name, result.groups(0)
-        else:
-            return self.name, None
-
-class GPSTimeParser(BaseParser):
-    def __init__(self):
-        super().__init__()
-        #Curr Time: Mon Jul  7 16:40:19 2025 MT:  176064
-        self.regex = re.compile(r"Curr Time: (\w+) (\w+) +(\d+) +(\d+):(\d+):(\d+) (\d+) MT: +(\d+)")
-        
-    def parse(self, s) -> [str, typing.Any]:
-        result = self.regex.match(s)
-        if result:
-            month, day, hh, mm, ss, year = [result.group(i) for i in range(2, 8)]
-            s = f"{day} {month} {year} {hh} {mm} {ss}"
-            tm = arrow.get(s, 'D MMM YYYY HH mm ss',  tzinfo='UTC')
-            return self.name, tm.timestamp()
-        else:
-            return self.name, None
-
-class GPSLatLonParser(BaseParser):
-    def __init__(self):
-        super().__init__()
-        #GPS Location:  5231.957 N   718.577 E measured      1.856 secs ago
-        self.regex = re.compile(r"GPS Location: +(\d+\.\d+) N ([-]?\d+\.\d+) E measured +(\d+\.\d+) secs ago")
-                                
-    def parse(self, s) -> [str, typing.Any]:
-        result = self.regex.match(s)
-        if result:
-            lat, lon, ago = [result.group(i) for i in range(1, 4)]
-            return self.name, (float(lat), float(lon))
-        else:
-            return self.name, None
-
-  
-class DisconnectEventParser(BaseParser):
-    def __init__(self):
-        super().__init__()
-        self.regex = re.compile(r"(surface_\d+: Waiting for final GPS fix.|.* LOG FILE OPENED)")
-                 
-    def parse(self, s) -> [str, typing.Any]:
-        result = self.regex.match(s)
-        if result:
-            return self.name, True
-        else:
-            return self.name, None
-        
-
-        
-class BufferHandler(object):
-
-    def __init__(self):
-        logger.info(f"Using BufferHandler for dialogue processing.")
-        self.queue = asyncio.Queue()
-        self._task = asyncio.create_task(self.process())
-        self.parsers = [VehicleNameParser(),
-                        GliderLABDOSParser(),
-                        GPSTimeParser(),
-                        GPSLatLonParser(),
-                        DisconnectEventParser()]
-        self.memory = dict()
-        self._buffer = ""
-        self.memory["connection"] = CARRIER_DETECT_UNDEFINED
-        self.timer = Timer()
-        
-    async def send(self, data) -> None:
-        try:
-            s = data.decode()
-        except:
-            logger.degug("Failed to decode string")
-        else:
-            await self.queue.put(s)
-                
-    def clear_buffer(self) -> str:
-        try:
-            index = self._buffer.index('\n')
-        except ValueError:
-            s = ""
-        else:
-            s = self._buffer[:index]
-            self._buffer = self._buffer[index + 1:]
-        return s
-
-    def clear_memory(self) -> None:
-        keys_to_clear = [k for k in self.memory.keys() if not k in ["connection", "VehicleName"]]
-        for k in keys_to_clear:
-            self.memory.pop(k)
-            
-    async def process(self) -> None:
-        logger.debug("Starting BufferHandler.process()...")
-        try:
-            while True:
-                try:
-                    line = await asyncio.wait_for(self.queue.get(), timeout=1.)
-                except asyncio.TimeoutError:
-                    if self.timer.is_timed_out:
-                        self.memory["connection"] = CARRIER_DETECT_NO
-                        self.clear_memory()
-                    continue
-                else:
-                    if line:
-                        self._buffer += line
-                        while True: # process all parts from the buffer that end in \n
-                            s = self.clear_buffer()
-                            if not s: # empty buffer.
-                                break
-                            for p in self.parsers:
-                                k, v = p.parse(s)
-                                if v is not None:
-                                    self.memory[k] = v
-                                    if k in ["VehicleNameParser", "GliderLABDOSParser"]:
-                                        self.timer.reset()
-                                        self.memory["connection"] = CARRIER_DETECT_YES
-                                    elif k in ["DisconnectEventParser"]:
-                                        self.memory["connection"] = CARRIER_DETECT_NO
-                                        self.clear_memory()
-                logger.debug(self.memory)
-                                
-        except asyncio.CancelledError:
-            pass # got cancelled.
-        logger.debug("Exiting process().")
-        
-    async def close(self) -> None:
-        # Cancel the task and wait for it to finish
-        self._task.cancel()
-        try:
-            await self._task
-        except asyncio.CancelledError:
-            pass
-
-    @property
-    def cd(self) -> bool:
-        carrier_dectect = self.memory["connection"]
-        if carrier_dectect == CARRIER_DETECT_UNDEFINED:
-            carrier_dectect = CARRIER_DETECT_YES # Give control by default.
-        return carrier_dectect==CARRIER_DETECT_YES
-        
-class DummyBufferHandler(object):
-    def __init__(self):
-        logger.info("Using DummyBufferHandler for dialogue processing.")
-        
-    async def send(self) -> None:
-        return
-
-    async def close(self) -> None:
-        return
-    
-    @property
-    def cd(self) -> int:
-        return CARRIER_DETECT_YES
 
 
     
@@ -283,9 +53,9 @@ class Serial2TCP(object):
         else:
             self.carrier_detect_status = CARRIER_DETECT_UNDEFINED
         if 'simulateCD' in self.serial_options:
-            self.buffer_handler = BufferHandler()
+            self.buffer_handler = bufferhandler.BufferHandler()
         else:
-            self.buffer_handler = DummyBufferHandler()
+            self.buffer_handler = bufferhandler.DummyBufferHandler()
             
     async def initialise_serial_connection(self):
         """ Establishes connection to serial device and TCP server.
