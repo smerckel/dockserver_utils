@@ -12,6 +12,7 @@ import aionotify # type: ignore
 
 from . import filewatcher
 from . import bufferhandler
+from . import server
 from .constants import *
 
         
@@ -46,7 +47,7 @@ class Serial2TCP(object):
         self.ser_writer: asyncio.StreamWriter | None = None
         self.tcp_reader: asyncio.StreamReader | None = None
         self.tcp_writer: asyncio.StreamWriter | None = None
-        
+
         self.carrier_detect_status: int
         if 'direct' in self.serial_options:
             self.carrier_detect_status = CARRIER_DETECT_YES
@@ -56,7 +57,9 @@ class Serial2TCP(object):
             self.buffer_handler = bufferhandler.BufferHandler()
         else:
             self.buffer_handler = bufferhandler.DummyBufferHandler()
-            
+
+
+
     async def initialise_serial_connection(self):
         """ Establishes connection to serial device and TCP server.
 
@@ -412,13 +415,15 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
                  devices: list[str],
                  serial_options: dict[str,str]={}, 
                  host: str = "localhost",
-                 port: int = 8181):
+                 port: int = 8181,
+                 server_port: int = 11000):
         super().__init__(top_directory)
         self.devices: list[str] = devices
         self.serial_options: dict[str,str] = serial_options
         self.host: str = host
         self.port: int = port
         self.watcher: aionotify.Watcher
+        self.server: server.AysncZeroMQServer = server.AsyncZeroMQServer(server_port)
         self.active_connections: list[str] = []
         self.tasks: list[asyncio.Task] = []
         
@@ -485,10 +490,12 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         except KeyError:
             serial_options = ""
         serial2tcp = Serial2TCP(device, serial_options, self.host, self.port)
+        self.server.register_callback(device, serial2tcp.buffer_handler.callback)
         result = await serial2tcp.run()
         logger.debug("Serial instance cleaned up.")
         logger.debug(f"Result : {result}.")
         self.active_connections.remove(device)
+        self.server.deregister_callback(device)
         return result, device
 
 
@@ -528,6 +535,7 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
         """ Custom entry point, which checks for already existing serial ports
             and handles these if configured so.
         """
+        server_task = asyncio.create_task(self.server.run())
         for device in self.devices:
             if os.path.exists(device):
                 _t = asyncio.create_task(self.handle_connection(device))
@@ -572,7 +580,9 @@ class SerialDeviceForwarder(filewatcher.AsynchronousDirectoryMonitorBase):
                     logger.info(f"Restarted connection handler for {device}.")
             if mesg:
                 break
-            
+        server_task.cancel()
+        await asyncio.sleep(0.1)
+        logger.debug(f"ZMQ server status: {server_task.cancelled}")
         logger.error(mesg)
         with open("/dev/stderr", "w") as fp:
             fp.write(f"Fatal error: {mesg}\n")
