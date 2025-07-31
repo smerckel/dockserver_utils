@@ -271,7 +271,7 @@ class DummyBufferHandler(object):
     def __init__(self):
         logger.info("Using DummyBufferHandler for dialogue processing.")
         
-    async def send(self) -> None:
+    async def send(self, *p) -> None:
         return
 
     async def close(self) -> None:
