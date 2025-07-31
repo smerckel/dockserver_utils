@@ -157,14 +157,17 @@ class BufferHandler(object):
         self.memory["running"] = False
         self.timer = Timer()
         self.line_buffer = deque([], maxlen=5)
+
+    
     async def send(self, data) -> None:
         try:
             s = data.decode()
         except:
-            logger.degug("Failed to decode string")
+            logger.debug("Failed to decode string")
         else:
             await self.queue.put(s)
-                
+
+            
     def clear_buffer(self) -> str:
         try:
             index = self._buffer.index('\n')
