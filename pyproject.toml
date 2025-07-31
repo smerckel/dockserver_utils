@@ -28,6 +28,7 @@ classifiers = [
 [project.scripts]
 serialTCPFwd = "dockserver_utils.scripts:serialTCPFwd"
 fileDecompressorHelper = "dockserver_utils.scripts:fileDecompressorHelper"
+serialTCPFwdCtl = "dockserver_utils.scripts:serialTCPFwdCtl"
 
 [build-system]
 requires = ["setuptools"]

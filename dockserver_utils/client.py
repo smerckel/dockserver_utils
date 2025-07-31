@@ -30,9 +30,9 @@ class ZeroMQClient:
 class UI(object):
     COMMANDS = "quit device status connect disconnect".split()
     
-    def __init__(self, host="localhost", port=11000):
+    def __init__(self, device=None, host="localhost", port=11000):
         self.client = ZeroMQClient(host, port)
-        self.device = "/dev/ttyUSB0"
+        self.device = device or None
         
     def get_command(self, input_str):
         s, *_ = input_str.split()
@@ -110,9 +110,7 @@ class UI(object):
             print("Closing down")
 
         
-def main():
+if __name__ == "__main__":
     ui = UI("localhost", 11000)
     ui.run()
-    
-if __name__ == "__main__":
-    main()
+

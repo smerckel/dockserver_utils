@@ -1,11 +1,13 @@
 from abc import ABC, abstractmethod
 import arrow
 import asyncio
+from collections import deque
 import logging
 import typing
 import re
 
-from .constants import *
+from .constants import CARRIER_DETECT_UNDEFINED, CARRIER_DETECT_YES, CARRIER_DETECT_NO
+
 
 
 
@@ -139,7 +141,7 @@ class DisconnectEventParser(BaseParser):
         
 class BufferHandler(object):
 
-    def __init__(self):
+    def __init__(self, carrier_dectect: int = CARRIER_DETECT_UNDEFINED):
         logger.info(f"Using BufferHandler for dialogue processing.")
         self.queue = asyncio.Queue()
         self._task = asyncio.create_task(self.process())
@@ -151,10 +153,10 @@ class BufferHandler(object):
                         DisconnectEventParser()]
         self.memory = dict()
         self._buffer = ""
-        self.memory["connection"] = CARRIER_DETECT_UNDEFINED
+        self.memory["connection"] = carrier_dectect
         self.memory["running"] = False
         self.timer = Timer()
-        
+        self.line_buffer = deque([], maxlen=5)
     async def send(self, data) -> None:
         try:
             s = data.decode()
@@ -185,11 +187,24 @@ class BufferHandler(object):
         self.memory["connection"] = CARRIER_DETECT_NO
 
     async def callback(self, command):
-        if command=="connect":
-            self.connect()
-        elif command=="disconnect":
-            self.disconnect()
-        mesg = f"Device {command}ed."
+        match command:
+            case "connect":
+                self.connect()
+                mesg = f"Device {command}ed."
+            case "disconnect":
+                self.disconnect()
+                mesg = f"Device {command}ed."
+            case "status":
+                match self.memory["connection"]:
+                    case 0: #CARRIER_DETECT_UNDEFINED:
+                        mesg = "Connection status undefined"
+                    case 1: #CARRIER_DETECT_YES:
+                        mesg = "Device is connected."
+                    case 2: #CARRIER_DETECT_NO:
+                        mesg = "Device is not connected."
+            case _:
+                mesg = f"Command {command} unprocessed."        
+
         return mesg
     
     async def process(self) -> None:
@@ -210,6 +225,7 @@ class BufferHandler(object):
                             s = self.clear_buffer()
                             if not s: # empty buffer.
                                 break
+                            self.line_buffer.append(s)
                             for p in self.parsers:
                                 k, v = p.parse(s)
                                 if v is not None:

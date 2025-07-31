@@ -54,11 +54,9 @@ class Serial2TCP(object):
         else:
             self.carrier_detect_status = CARRIER_DETECT_UNDEFINED
         if 'simulateCD' in self.serial_options:
-            self.buffer_handler = bufferhandler.BufferHandler()
+            self.buffer_handler = bufferhandler.BufferHandler(self.carrier_detect_status)
         else:
             self.buffer_handler = bufferhandler.DummyBufferHandler()
-
-
 
     async def initialise_serial_connection(self):
         """ Establishes connection to serial device and TCP server.
@@ -195,6 +193,25 @@ class Serial2TCP(object):
         logger.debug(f"Exiting with {errorno} (device={self.device}).")
         return errorno
 
+    async def send_backlog(self, line_buffer):
+        line_buffer.appendleft("\r") # makes sending a return first
+        while line_buffer:
+            line = line_buffer.popleft()
+            try:
+                data = line.encode()
+            except UnicodeEncodeError:
+                # ignore any line that cannot be encoded.
+                pass
+            else:
+                # self.tcp_writer should be defined, but check nonetheless.
+                if self.tcp_writer is not None:
+                    self.tcp_writer.write(data)
+                    try:
+                        await self.tcp_writer.drain()
+                    except Exception:
+                        # ignore any errors
+                        pass
+            
     async def monitor_carrier_detect(self) -> int:
         errorno = COMMS_NOERROR
         try:
@@ -222,11 +239,16 @@ class Serial2TCP(object):
                     self.carrier_detect_status = _status
                     logger.debug(f"Carrier detect: {_status} for {self.device}")
                     if _status == CARRIER_DETECT_YES and self.tcp_writer is None:
-                        errorno = await self.initialise_tcp_connection()                            
+                        errorno = await self.initialise_tcp_connection()
                         if errorno: # Connection error.
                             break
+                        if 'simulateCD' in self.serial_options:
+                            # write buffer_handler's buffer to tcp.
+                            await self.send_backlog(self.buffer_handler.line_buffer)
                     elif _status == CARRIER_DETECT_NO and self.tcp_writer is not None:
                         await self.close_tcp_connection()
+                        if 'simulateCD' in self.serial_options:
+                            self.buffer_handler.line_buffer.clear()
                 await asyncio.sleep(0.1)
         finally:
             logger.debug(f"monitor_carrier_detect(): cleaning up writers...")

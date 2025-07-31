@@ -10,6 +10,7 @@ import toml
 
 from . import serial2tcp
 from . import fileDecompressor
+from . import client
 
 LOGDIR = "/var/local/log"
 
@@ -209,3 +210,42 @@ handle compressded glider files automatically."""
     fdc = fileDecompressor.AsynchronousFileDecompressorAionotify(top_directory=args.directory,
                                                                  file_renamer = file_renamer)
     asyncio.run(fdc.run())
+
+
+
+def serialTCPFwdCtl():
+    description = "A client to serialTCPFwd built-in server to control connections remotely."
+    help_text = """
+On the command prompt the following commands are available:
+
+    quit : ends program
+    
+    device : sets device that needs to be controlled. Example: device /dev/ttyUSB0
+    
+    connect : establishes a TCP connection for the active serial device.
+    
+    disconnect : closes the TCP connection for the active serial device.
+    
+    status : shows current connection status of the active serial device.
+
+    Commands can be abbreviated as longs they remain unique.
+"""
+    parser = argparse.ArgumentParser(
+        description=description,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=help_text
+    )
+    parser.add_argument('-d', '--device',
+                        help="Device name. If not set, user can set and change the device name.",
+                        type=str)
+    parser.add_argument('-s', '--server', help='Host name of serialTCPFwd server',
+                        type=str, default="localhost")
+    parser.add_argument('-p', '--port', help='TCP port of serialTCPFwd server',
+                        type=int, default=11000)
+    args = parser.parse_args()
+    device = args.device
+    ui = client.UI(device=device, host=args.server, port=args.port)
+    ui.run()
+
+
+    
