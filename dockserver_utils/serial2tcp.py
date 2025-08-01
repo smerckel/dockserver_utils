@@ -197,6 +197,7 @@ class Serial2TCP(object):
         line_buffer.appendleft("\r") # makes sending a return first
         while line_buffer:
             line = line_buffer.popleft()
+            line += "\n"
             try:
                 data = line.encode()
             except UnicodeEncodeError:

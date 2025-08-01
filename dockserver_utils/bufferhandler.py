@@ -18,11 +18,16 @@ class Timer(object):
         self._elapsed = 0.
         self._dt = 1
         self._task = asyncio.create_task(self.run())
+        self._active = True
         logger.debug("Timer started...")
         
     def reset(self) -> None:
         self._elapsed = 0.
+        self._active = True
 
+    def disable_until_reset(self):
+        self._active = False
+        
     async def run(self) -> None:
         while True:
             await asyncio.sleep(self._dt)
@@ -39,7 +44,7 @@ class Timer(object):
 
     @property
     def is_timed_out(self) -> bool:
-        return self._elapsed > self.timeout
+        return self._active  and  (self._elapsed > self.timeout)
     
 
 class BaseParser(ABC):
@@ -185,9 +190,11 @@ class BufferHandler(object):
 
     def connect(self):
         self.memory["connection"] = CARRIER_DETECT_YES
+        self.timer.disable_until_reset()
 
     def disconnect(self):
         self.memory["connection"] = CARRIER_DETECT_NO
+        self.timer.reset()
 
     async def callback(self, command):
         match command:
