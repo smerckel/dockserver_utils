@@ -288,7 +288,7 @@ class DummyBufferHandler(object):
     def cd(self) -> int:
         return CARRIER_DETECT_YES
 
-    async def callback(self) -> None:
+    async def callback(self, *p) -> None:
         logger.debug("DUMMY Callback called.")
         return 
     

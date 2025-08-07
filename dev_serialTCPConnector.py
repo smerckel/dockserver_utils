@@ -20,7 +20,8 @@ devices = ['/dev/ttyUSB0',
            '/dev/ttyUSB1',
            '/dev/ttyS0']
 devices.remove('/dev/ttyS0')
-serial_options = {'/dev/ttyUSB0':'direct,simulateCD'}
+#serial_options = {'/dev/ttyUSB0':'direct,simulateCD'}
+serial_options = {'/dev/ttyUSB0':'direct'}
 server = '10.200.66.34'
 port = 8181
 
