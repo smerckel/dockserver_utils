@@ -133,7 +133,8 @@ class MenuParser(BaseParser):
 class DisconnectEventParser(BaseParser):
     def __init__(self):
         super().__init__()
-        self.regex = re.compile(r"(surface_\d+: Waiting for final GPS fix.|.* LOG FILE OPENED)")
+        #self.regex = re.compile(r"(surface_\d+: Waiting for final GPS fix.|.* LOG FILE OPENED)")
+        self.regex = re.compile(r"(surface_\d+: Waiting for final GPS fix.|Megabytes available n CF file system)")
                  
     def parse(self, s) -> [str, typing.Any]:
         result = self.regex.match(s)
